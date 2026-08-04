@@ -1,0 +1,73 @@
+.assessment-section {
+  padding: var(--section-padding);
+  background: var(--color-gray-900);
+}
+
+.assessment-section .section-header h2 {
+  color: var(--color-white);
+}
+
+.assessment-section .section-header p {
+  color: var(--color-gray-400);
+}
+
+.assessment-card {
+  max-width: 650px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--border-radius);
+  padding: 40px;
+}
+
+.assessment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 32px;
+}
+
+.assessment-header h3 {
+  font-size: 20px;
+  color: var(--color-white);
+}
+
+.match-badge {
+  background: rgba(13, 148, 136, 0.15);
+  color: var(--color-teal);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dimensions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.dimension-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: var(--color-gray-400);
+}
+
+.dimension-score {
+  font-weight: 600;
+  color: var(--color-white);
+}
+
+.dimension-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.dimension-fill {
+  height: 100%;
+  border-radius: 4px;
+}

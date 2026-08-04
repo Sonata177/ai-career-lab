@@ -1,0 +1,11 @@
+node_modules
+dist
+*.log
+.env
+server/.env
+server/node_modules
+.git
+.vscode
+.idea
+*.tar.gz
+*-backup

@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+    working_dir: /app
+    command: node index.js
+    env_file:
+      - server/.env
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    build:
+      context: .
+      target: production
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

@@ -1,0 +1,78 @@
+.timeline-bar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 16px 24px;
+  background: var(--color-white);
+  border-bottom: 1px solid var(--color-gray-200);
+}
+
+.timeline-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.timeline-step:not(:last-child)::after {
+  content: '';
+  flex: 1;
+  height: 2px;
+  background: var(--color-gray-200);
+  margin: 0 8px;
+}
+
+.timeline-step.completed:not(:last-child)::after {
+  background: var(--color-blue);
+}
+
+.step-indicator {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.step-indicator.pending {
+  background: var(--color-gray-100);
+  color: var(--color-gray-400);
+}
+
+.step-indicator.active {
+  background: var(--color-blue);
+  color: white;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
+}
+
+.step-indicator.completed {
+  background: var(--color-teal);
+  color: white;
+}
+
+.step-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.step-time {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-gray-400);
+}
+
+.step-title {
+  font-size: 13px;
+  color: var(--color-gray-800);
+  font-weight: 500;
+}
+
+@media (max-width: 768px) {
+  .step-info {
+    display: none;
+  }
+}
