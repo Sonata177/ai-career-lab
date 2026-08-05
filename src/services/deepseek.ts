@@ -22,7 +22,7 @@ export async function streamChatCompletion({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: 'deepseek-v4-flash',
         messages,
         stream: true,
         temperature: 0.8,
