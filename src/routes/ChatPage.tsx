@@ -354,6 +354,7 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
     await streamChatCompletion({
       messages: [{ role: 'user', content: prompt }],
       maxTokens: 4096,
+      temperature: 0.2,
       onChunk: (text) => { result += text },
       onDone: () => {
         try {

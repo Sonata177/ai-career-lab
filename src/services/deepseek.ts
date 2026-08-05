@@ -8,6 +8,7 @@ interface ChatCompletionOptions {
   onDone: () => void
   onError: (error: Error) => void
   maxTokens?: number
+  temperature?: number
 }
 
 export async function streamChatCompletion({
@@ -16,6 +17,7 @@ export async function streamChatCompletion({
   onDone,
   onError,
   maxTokens = 1024,
+  temperature = 0.8,
 }: ChatCompletionOptions) {
   try {
     const response = await fetch(`${API_BASE}/chat/completions`, {
@@ -25,7 +27,7 @@ export async function streamChatCompletion({
         model: 'deepseek-v4-flash',
         messages,
         stream: true,
-        temperature: 0.8,
+        temperature: temperature,
         max_tokens: maxTokens,
       }),
     })
