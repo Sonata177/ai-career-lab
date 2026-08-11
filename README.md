@@ -45,15 +45,17 @@ ALLOWED_ORIGINS=http://localhost:5173
 cd server
 npm install
 node --env-file=.env index.js
+pm2 start index.js --name myapp
 ```
 
-### 3. 启动前端（端口 5173）
+### 3. 启动前端（端口 5173）(如果你有pm2，可以后台启动)
 
 另开一个终端：
 
 ```bash
 npm install
 npm run dev
+pm2 start npm --name myapp -- run dev
 ```
 
 浏览器访问 http://localhost:5173 即可。前端通过 Vite 代理把 `/api` 请求转发到后端。
@@ -74,3 +76,13 @@ docker compose up -d --build
 ```
 
 Nginx 监听 80 端口对外提供服务，并将 `/api` 反向代理到后端容器（3001）。
+
+
+## PM2
+```
+pm2 list 查看进程
+pm2 logs myapp 查看日志
+pm2 restart myapp 重启
+pm2 stop myapp 停止
+pm2 save 保存进程列表，开机自启（需 pm2 startup）
+```
