@@ -119,7 +119,7 @@ def build_base_record(level, sample_filename, task_id, run_id, data):
         "request_sent_at": None,            # 请求发出时刻（ISO）
         "request_duration_ms": None,        # 本次请求耗时（毫秒）
         "request_success": False,
-        "failure_type": None,               # timeout|connection|http_5xx|http_client|unknown
+        "failure_type": None,               # timeout|connection|http_5xx|http_client|unknown|parse
         "http_status": None,                # HTTP 状态码（如有）
         "response_snippet": None,           # 失败时响应体前 200 字符（如有）
         "retry_delay_s": None,              # 本次失败后到下次重试的等待秒数（仅失败且还会重试时）
@@ -134,6 +134,34 @@ def build_base_record(level, sample_filename, task_id, run_id, data):
     if SAVE_REQUEST_BODY:
         record["request_body"] = data
     return record
+
+
+# ---------- 失败处理函数（新增）----------
+def handle_failure(record, retry_count, max_attempts, exit_code, exit_msg):
+    """
+    处理一次失败的尝试（请求失败或响应解析失败）：
+    - 未达到最大尝试次数：累计 retry_reasons、记录退避延迟、立即落盘失败记录，
+      等待后返回新的 retry_count 供循环继续（请求继续重试）。
+    - 已达到最大尝试次数：标记 is_last_attempt、落盘最后一次失败记录，
+      以 exit_code 退出（请求失败 -> EXIT_NETWORK_ERR，解析失败 -> EXIT_RESPONSE_ERR）。
+    """
+    new_retry = retry_count + 1
+    record["retry_reasons"].append(record["error"])
+
+    if new_retry < max_attempts:
+        record["retry_delay_s"] = RETRY_BACKOFF * (2 ** (new_retry - 1))
+        print(f"[任务 {record['task_id']}] 第 {record['attempt']} 次尝试失败，"
+              f"将在 {record['retry_delay_s']} 秒后重试...", file=sys.stderr)
+        append_result(record)            # 保存本次失败记录
+        time.sleep(record["retry_delay_s"])
+        return new_retry
+
+    # 最后一次尝试也失败：以对应退出码结束
+    record["is_last_attempt"] = True
+    record["error"] = exit_msg
+    print(f"错误: {exit_msg}", file=sys.stderr)
+    append_result(record)                # 保存最后一次失败记录
+    sys.exit(exit_code)
 
 
 # ---------- Schema 校验函数（不变）----------
@@ -334,16 +362,17 @@ def main():
 
     data["stream"] = False
 
-    # ----- 带重试的请求发送：每次实际请求单独落盘 -----
+    # ----- 带重试的"请求 + 解析"循环：每次实际尝试单独落盘 -----
+    # 请求失败（timeout/connection/http_5xx/unknown）与响应解析失败（parse）
+    # 都参与重试；4xx 不重试直接退出；Schema 校验失败不重试（见下方）。
     retry_count = 0
     response = None
-    request_success = False
     last_exception = None
     max_attempts = MAX_RETRIES + 1
 
     while retry_count < max_attempts:
         # 每次尝试前重置本次特有的字段
-        record["attempt"] = retry_count + 1
+        record["attempt"] = retry_count + 1          # attempt 每次 +1
         record["is_last_attempt"] = False
         record["request_sent_at"] = now_iso()
         record["request_duration_ms"] = None
@@ -352,12 +381,16 @@ def main():
         record["http_status"] = None
         record["response_snippet"] = None
         record["retry_delay_s"] = None
+        record["raw_output"] = None
+        record["parse_success"] = False
+        record["parsed_result"] = None
 
         if retry_count == 0:
             print(f"[任务 {task_id}] 正在向 {API_URL} 发送请求...")
         else:
             print(f"[任务 {task_id}] 重试 (第 {retry_count} 次) ...")
 
+        # ---- 1. 发送请求 ----
         t0 = time.perf_counter()
         try:
             response = requests.post(
@@ -369,8 +402,6 @@ def main():
             response.raise_for_status()
             record["request_success"] = True
             record["http_status"] = response.status_code
-            request_success = True
-            break
         except requests.exceptions.Timeout as e:
             last_exception = e
             record["request_duration_ms"] = elapsed_ms(t0)
@@ -404,6 +435,7 @@ def main():
                 if response is not None and response.text:
                     record["response_snippet"] = response.text[:200]
                     print(f"响应内容: {response.text[:200]}", file=sys.stderr)
+                record["is_last_attempt"] = True
                 append_result(record)
                 sys.exit(EXIT_HTTP_ERR)
         except requests.exceptions.RequestException as e:
@@ -414,84 +446,88 @@ def main():
             record["error"] = err_msg
             print(f"警告: {err_msg}", file=sys.stderr)
 
-        # ---- 走到这里说明本次请求失败：先落盘本次请求记录，再决定是否重试 ----
-        retry_count += 1
-        record["retry_reasons"].append(record["error"])
+        # ---- 2. 请求失败：落盘并决定是否重试 ----
+        if not record["request_success"]:
+            retry_count = handle_failure(
+                record, retry_count, max_attempts,
+                exit_code=EXIT_NETWORK_ERR,
+                exit_msg=f"请求失败，已达最大重试次数 ({MAX_RETRIES})，最后异常: {last_exception}",
+            )
+            continue
 
-        if retry_count < max_attempts:
-            record["retry_delay_s"] = RETRY_BACKOFF * (2 ** (retry_count - 1))
-            print(f"[任务 {task_id}] 第 {record['attempt']} 次请求失败，"
-                  f"将在 {record['retry_delay_s']} 秒后重试...", file=sys.stderr)
-            append_result(record)            # 保存本次失败请求
-            time.sleep(record["retry_delay_s"])
-        else:
-            record["is_last_attempt"] = True
-            err_msg = f"请求失败，已达最大重试次数 ({MAX_RETRIES})，最后异常: {last_exception}"
+        # ---- 3. 请求成功：解析整体响应（失败计入 parse，参与重试）----
+        try:
+            resp_data = response.json()
+            if not isinstance(resp_data, dict):
+                raise TypeError("响应顶层不是 dict")
+        except (json.JSONDecodeError, TypeError) as e:
+            err_msg = f"响应不是有效的 JSON 或顶层类型错误: {e}"
+            print(err_msg, file=sys.stderr)
+            record["failure_type"] = "parse"
+            record["error"] = err_msg
+            record["response_snippet"] = response.text[:200]
+            retry_count = handle_failure(
+                record, retry_count, max_attempts,
+                exit_code=EXIT_RESPONSE_ERR,
+                exit_msg=f"响应解析失败，已达最大重试次数 ({MAX_RETRIES})，最后错误: {err_msg}",
+            )
+            continue
+
+        # ---- 4. 提取 content（结构不符也计入 parse，参与重试）----
+        try:
+            choices = resp_data.get("choices")
+            if not isinstance(choices, list) or len(choices) == 0:
+                raise TypeError("choices 不是非空列表")
+            first_choice = choices[0]
+            if not isinstance(first_choice, dict):
+                raise TypeError("choices[0] 不是 dict")
+            message = first_choice.get("message")
+            if not isinstance(message, dict):
+                raise TypeError("message 不是 dict")
+            content = message.get("content")
+            if not isinstance(content, str):
+                raise TypeError(f"content 不是字符串，实际类型: {type(content).__name__}")
+        except (KeyError, TypeError, ValueError) as e:
+            err_msg = f"响应结构不符合预期 - {e}"
+            print(err_msg, file=sys.stderr)
+            print(f"原始响应片段: {response.text[:500]}", file=sys.stderr)
+            record["failure_type"] = "parse"
+            record["error"] = err_msg
+            record["response_snippet"] = response.text[:200]
+            retry_count = handle_failure(
+                record, retry_count, max_attempts,
+                exit_code=EXIT_RESPONSE_ERR,
+                exit_msg=f"响应结构不符合预期，已达最大重试次数 ({MAX_RETRIES})，最后错误: {err_msg}",
+            )
+            continue
+
+        record["raw_output"] = content
+
+        # ---- 5. 将 content 解析为 JSON（解析失败计入 parse，参与重试）----
+        try:
+            parsed = json.loads(content)
+            record["parsed_result"] = parsed
+            record["parse_success"] = True
+        except json.JSONDecodeError as e:
+            record["parsed_result"] = None
+            record["parse_success"] = False
+            err_msg = f"content 不是有效的 JSON: {e}"
+            record["failure_type"] = "parse"
             record["error"] = err_msg
             print(f"错误: {err_msg}", file=sys.stderr)
-            append_result(record)            # 保存最后一次失败请求
-            sys.exit(EXIT_NETWORK_ERR)
+            retry_count = handle_failure(
+                record, retry_count, max_attempts,
+                exit_code=EXIT_RESPONSE_ERR,
+                exit_msg=f"content 解析失败，已达最大重试次数 ({MAX_RETRIES})，最后错误: {err_msg}",
+            )
+            continue
 
-    if not request_success:
-        err_msg = "未知错误：请求未成功但未触发退出"
-        print(err_msg, file=sys.stderr)
-        record["error"] = err_msg
-        append_result(record)
-        sys.exit(EXIT_NETWORK_ERR)
+        # ---- 6. 请求 + 解析全部成功 ----
+        break
 
-    # 请求成功：这条记录就是本 run 的最后一条
+    # 请求与解析成功：这条记录就是本 run 的最后一条
     record["is_last_attempt"] = True
     record["error"] = None
-
-    # ----- 解析整体响应并提取 content -----
-    try:
-        resp_data = response.json()
-        if not isinstance(resp_data, dict):
-            raise TypeError("响应顶层不是 dict")
-    except (json.JSONDecodeError, TypeError) as e:
-        err_msg = f"响应不是有效的 JSON 或顶层类型错误: {e}"
-        print(err_msg, file=sys.stderr)
-        record["error"] = err_msg
-        append_result(record)
-        sys.exit(EXIT_RESPONSE_ERR)
-
-    try:
-        choices = resp_data.get("choices")
-        if not isinstance(choices, list) or len(choices) == 0:
-            raise TypeError("choices 不是非空列表")
-        first_choice = choices[0]
-        if not isinstance(first_choice, dict):
-            raise TypeError("choices[0] 不是 dict")
-        message = first_choice.get("message")
-        if not isinstance(message, dict):
-            raise TypeError("message 不是 dict")
-        content = message.get("content")
-        if not isinstance(content, str):
-            raise TypeError(f"content 不是字符串，实际类型: {type(content).__name__}")
-    except (KeyError, TypeError, ValueError) as e:
-        err_msg = f"响应结构不符合预期 - {e}"
-        print(err_msg, file=sys.stderr)
-        print(f"原始响应片段: {response.text[:500]}", file=sys.stderr)
-        record["error"] = err_msg
-        append_result(record)
-        sys.exit(EXIT_RESPONSE_ERR)
-
-    record["raw_output"] = content
-
-    # ----- 尝试将 content 解析为 JSON -----
-    try:
-        parsed = json.loads(content)
-        record["parsed_result"] = parsed
-        record["parse_success"] = True
-        record["error"] = None
-    except json.JSONDecodeError as e:
-        record["parsed_result"] = None
-        record["parse_success"] = False
-        err_msg = f"content 不是有效的 JSON: {e}"
-        record["error"] = err_msg
-        print(f"错误: {err_msg}", file=sys.stderr)
-        append_result(record)
-        sys.exit(EXIT_RESPONSE_ERR)
 
     # ----- Schema 校验（不重试，直接记录并退出）-----
     valid, errors = validate_schema(parsed)

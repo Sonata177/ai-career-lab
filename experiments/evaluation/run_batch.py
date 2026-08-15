@@ -59,7 +59,7 @@ def parse_temperatures(raw):
     return temps
 
 
-def parse_run_id(raw):
+def parse_repeats(raw):
     """解析 run_id：每个 level×温度组合重复执行的次数，必须为大于 0 的整数。"""
     try:
         run_id = int(raw)
@@ -88,7 +88,7 @@ def parse_args(argv):
         print("  run_id:       每个 level×温度组合重复执行的次数（>0 整数）", file=sys.stderr)
         print("示例: python run_batch.py high,mid,low 1,0.8,0.2 5", file=sys.stderr)
         sys.exit(EXIT_FAILURE)
-    return parse_levels(argv[1]), parse_temperatures(argv[2]), parse_run_id(argv[3])
+    return parse_levels(argv[1]), parse_temperatures(argv[2]), parse_repeats(argv[3])
 
 
 # ---------- 单任务执行 ----------
