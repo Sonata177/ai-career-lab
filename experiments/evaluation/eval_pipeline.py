@@ -2,6 +2,7 @@ import sys
 import json
 import time
 import uuid
+import math
 from pathlib import Path
 from datetime import datetime
 import requests
@@ -27,11 +28,6 @@ REQUEST_TIMEOUT = 240
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1
 
-# 当前任务第几次运行（1-based 运行计数）。
-# 现阶段固定为 1；后续对该任务写循环执行时，由循环体传入并递增
-# （建议做成可选参数：python eval_pipeline.py <level> [run_id]，缺省 1）。
-RUN_ID = 1
-
 # 是否把每次请求的完整 body（含全部 messages）也写入记录。
 # 注意：messages 可能很大（数万字符），开启后结果文件会显著膨胀。
 SAVE_REQUEST_BODY = False
@@ -53,7 +49,52 @@ def elapsed_ms(t0):
     return round((time.perf_counter() - t0) * 1000, 1)
 
 
-def build_base_record(level, sample_filename, task_id, data):
+def parse_args(argv):
+    """
+    解析命令行参数（三个参数全部必填）：
+      python eval_pipeline.py <high|mid|low> <run_id> <temperature>
+
+    - level:       必填，high/mid/low 之一
+    - run_id:      必填，必须为大于 0 的整数（该任务第几次运行）
+    - temperature: 必填，0~2 之间的数字（含 0 和 2），覆盖样本文件中的 temperature
+
+    校验失败时打印错误信息并退出 EXIT_USAGE。
+    返回 (level, run_id, temperature)。
+    """
+    if len(argv) != 4:
+        print("用法: python eval_pipeline.py <high|mid|low> <run_id> <temperature>", file=sys.stderr)
+        print("  run_id:      必填，大于 0 的整数（该任务第几次运行）", file=sys.stderr)
+        print("  temperature: 必填，0~2 之间的数字（含 0 和 2）", file=sys.stderr)
+        print("示例: python eval_pipeline.py high 1 0.2", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    level = argv[1].lower()
+    if level not in LEVEL_FILE_MAP:
+        print(f"错误: 参数必须是 high/mid/low 之一，收到 '{level}'", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    try:
+        run_id = int(argv[2])
+    except ValueError:
+        print(f"错误: run_id 必须是大于 0 的整数，收到 '{argv[2]}'", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    if run_id <= 0:
+        print(f"错误: run_id 必须是大于 0 的整数，收到 '{argv[2]}'", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    try:
+        temperature = float(argv[3])
+    except ValueError:
+        print(f"错误: temperature 必须是 0~2 之间的数字，收到 '{argv[3]}'", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    if not math.isfinite(temperature) or not (0 <= temperature <= 2):
+        print(f"错误: temperature 必须在 0~2 之间（含 0 和 2），收到 '{argv[3]}'", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    return level, run_id, temperature
+
+
+def build_base_record(level, sample_filename, task_id, run_id, data):
     """
     构建一条记录骨架：
     - run 级元信息：同一 run 的所有 attempt 记录共享（run_id / sample / model 等）
@@ -64,7 +105,7 @@ def build_base_record(level, sample_filename, task_id, data):
         "record_schema": "v2-attempt",      # 记录格式版本，用于区分旧数据
         "sample": level,
         "prompt_file": sample_filename,
-        "run_id": RUN_ID,                   # 该任务第几次运行（1-based 运行计数；循环执行时递增）
+        "run_id": run_id,                   # 该任务第几次运行（1-based 运行计数，命令行可指定）
         "task_id": task_id,                 # 本次运行实例标识（uuid 前 8 位），每次运行唯一
         "model": data.get("model", "未指定"),
         "temperature": data.get("temperature", "未指定"),
@@ -126,40 +167,39 @@ def validate_schema(parsed):
     dims = parsed.get("dimensions")
     if "dimensions" not in parsed:
         pass
+    elif not isinstance(dims, list):
+        errors.append("dimensions 不是列表")
     else:
-        if not isinstance(dims, list):
-            errors.append("dimensions 不是列表")
-        else:
-            if len(dims) != 7:
-                errors.append(f"dimensions 长度应为 7，实际为 {len(dims)}")
-            expected_names = {"沟通表达", "问题拆解", "执行落地", "用户同理心",
-                              "数据敏感度", "优先级判断", "协作与求助"}
-            dim_names = set()
-            for idx, d in enumerate(dims):
-                if not isinstance(d, dict):
-                    errors.append(f"dimensions[{idx}] 不是字典")
-                    continue
-                for subkey in ["name", "score", "evidence", "color"]:
-                    if subkey not in d:
-                        errors.append(f"dimensions[{idx}] 缺少字段 '{subkey}'")
-                name = d.get("name")
-                if name not in expected_names:
-                    errors.append(f"dimensions[{idx}].name '{name}' 不在预期列表中")
-                else:
-                    dim_names.add(name)
-                score = d.get("score")
-                if not isinstance(score, (int, float)) or not (0 <= score <= 100):
-                    errors.append(f"dimensions[{idx}].score 不在 0~100 之间")
-                evidence = d.get("evidence")
-                if not isinstance(evidence, str) or evidence.strip() == "":
-                    errors.append(f"dimensions[{idx}].evidence 为空或不是字符串")
-            if dim_names != expected_names:
-                missing = expected_names - dim_names
-                extra = dim_names - expected_names
-                if missing:
-                    errors.append(f"缺少维度: {missing}")
-                if extra:
-                    errors.append(f"额外维度: {extra}")
+        if len(dims) != 7:
+            errors.append(f"dimensions 长度应为 7，实际为 {len(dims)}")
+        expected_names = {"沟通表达", "问题拆解", "执行落地", "用户同理心",
+                          "数据敏感度", "优先级判断", "协作与求助"}
+        dim_names = set()
+        for idx, d in enumerate(dims):
+            if not isinstance(d, dict):
+                errors.append(f"dimensions[{idx}] 不是字典")
+                continue
+            for subkey in ["name", "score", "evidence", "color"]:
+                if subkey not in d:
+                    errors.append(f"dimensions[{idx}] 缺少字段 '{subkey}'")
+            name = d.get("name")
+            if name not in expected_names:
+                errors.append(f"dimensions[{idx}].name '{name}' 不在预期列表中")
+            else:
+                dim_names.add(name)
+            score = d.get("score")
+            if not isinstance(score, (int, float)) or not (0 <= score <= 100):
+                errors.append(f"dimensions[{idx}].score 不在 0~100 之间")
+            evidence = d.get("evidence")
+            if not isinstance(evidence, str) or evidence.strip() == "":
+                errors.append(f"dimensions[{idx}].evidence 为空或不是字符串")
+        if dim_names != expected_names:
+            missing = expected_names - dim_names
+            extra = dim_names - expected_names
+            if missing:
+                errors.append(f"缺少维度: {missing}")
+            if extra:
+                errors.append(f"额外维度: {extra}")
 
     # 校验 strengths / improvements / suggestions 为字符串列表
     for field in ["strengths", "improvements", "suggestions"]:
@@ -212,21 +252,14 @@ def append_result(record):
 # ---------- 主函数 ----------
 def main():
     # ----- 1. 参数检查 -----
-    if len(sys.argv) != 2:
-        print("用法: python eval_pipeline.py <high|mid|low>", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
-
-    level = sys.argv[1].lower()
-    if level not in LEVEL_FILE_MAP:
-        print(f"错误: 参数必须是 high/mid/low 之一，收到 '{level}'", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
+    level, run_id, temperature = parse_args(sys.argv)
 
     task_id = str(uuid.uuid4())[:8]
     sample_filename = LEVEL_FILE_MAP[level]
     json_path = BASE_DIR / "experiments" / "temperature" / sample_filename
 
     # 记录骨架（预请求阶段错误也会用它落盘，stage=pre_request，保证每个 run 至少一条记录）
-    record = build_base_record(level, sample_filename, task_id, {})
+    record = build_base_record(level, sample_filename, task_id, run_id, {})
     record["stage"] = "pre_request"
 
     # ----- 文件存在性检查 -----
@@ -284,6 +317,9 @@ def main():
         append_result(record)
         sys.exit(EXIT_STRUCT_ERR)
 
+    # 命令行 temperature 覆盖样本文件配置（同时作用于请求体与记录字段）
+    data["temperature"] = temperature
+
     # 用真实数据补齐 run 级元信息
     record["model"] = data.get("model", "未指定")
     record["temperature"] = data.get("temperature", "未指定")
@@ -292,8 +328,9 @@ def main():
     record["stage"] = "request"
 
     print(f"成功加载: {json_path}")
-    print(f"文件名: {json_path.name}, model: {record['model']}, temperature: {record['temperature']}, "
-          f"max_tokens: {record['max_tokens']}, messages数量: {len(messages)}")
+    print(f"文件名: {json_path.name}, run_id: {record['run_id']}, model: {record['model']}, "
+          f"temperature: {record['temperature']}, max_tokens: {record['max_tokens']}, "
+          f"messages数量: {len(messages)}")
 
     data["stream"] = False
 
@@ -304,7 +341,7 @@ def main():
     last_exception = None
     max_attempts = MAX_RETRIES + 1
 
-    while retry_count  < max_attempts:
+    while retry_count < max_attempts:
         # 每次尝试前重置本次特有的字段
         record["attempt"] = retry_count + 1
         record["is_last_attempt"] = False
@@ -381,7 +418,7 @@ def main():
         retry_count += 1
         record["retry_reasons"].append(record["error"])
 
-        if retry_count  < max_attempts:
+        if retry_count < max_attempts:
             record["retry_delay_s"] = RETRY_BACKOFF * (2 ** (retry_count - 1))
             print(f"[任务 {task_id}] 第 {record['attempt']} 次请求失败，"
                   f"将在 {record['retry_delay_s']} 秒后重试...", file=sys.stderr)

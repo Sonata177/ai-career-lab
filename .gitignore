@@ -24,3 +24,6 @@ server/.env
 *.njsproj
 *.sln
 *.sw?
+*.pyc
+__pycache__/
+experiments/evaluation/data/*.json
