@@ -21,6 +21,7 @@ import { IdleHint } from '../components/chat/IdleHint'
 import { ColleagueDrawer, type ColleagueMessage } from '../components/chat/ColleagueDrawer'
 import type { ChatMessage } from '../types/chat'
 import type { ScenarioPhase } from '../types/job'
+import type { AssessmentResult } from '../types/assessment'
 import './ChatPage.css'
 
 const TASK_ICONS: Record<string, string> = {
@@ -35,6 +36,51 @@ function randomizePhase(phase: ScenarioPhase): ScenarioPhase {
   if (!useVariant) return phase
   const variant = phase.variants[Math.floor(Math.random() * phase.variants.length)]
   return { ...phase, ...variant }
+}
+
+/** 评估请求总次数上限：首次请求 + 1 次重试 */
+const MAX_ASSESSMENT_ATTEMPTS = 2
+
+/**
+ * 单次评估请求：把回调式 streamChatCompletion 包装成 Promise。
+ * 注意：result 必须在函数内部累积，否则第二次请求会拼接在第一次的错误内容后面。
+ */
+function requestAssessmentOnce(prompt: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let result = ''
+    streamChatCompletion({
+      messages: [{ role: 'user', content: prompt }],
+      maxTokens: 4096,
+      temperature: 0.2,
+      onChunk: (text) => { result += text },
+      onDone: () => resolve(result),
+      onError: (err) => reject(err),
+    })
+  })
+}
+
+/**
+ * 解析并校验评估结果：
+ * 提取 JSON -> JSON.parse 为 unknown -> isAssessmentResult 运行时校验
+ * 合格返回 AssessmentResult；解析或校验失败返回 null 并记录错误。
+ */
+function parseAssessmentResult(raw: string): AssessmentResult | null {
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      console.error('Assessment parse failed: 未找到 JSON 片段')
+      return null
+    }
+    const parsed: unknown = JSON.parse(jsonMatch[0])
+    if (isAssessmentResult(parsed)) {
+      return parsed
+    }
+    console.error('Assessment validation failed:', getAssessmentValidationErrors(parsed))
+    return null
+  } catch (e) {
+    console.error('Assessment parse error:', e)
+    return null
+  }
 }
 
 export function ChatPage() {
@@ -339,7 +385,6 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
     setComplete()
     const allMsgs = useChatStore.getState().messages
     const prompt = buildAssessmentPrompt(allMsgs, scenario.jobTitle, colleagueMessages)
-    let result = ''
 
     const finishWithFallback = () => {
       setResult({
@@ -355,36 +400,26 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
       navigate('/results')
     }
 
-    await streamChatCompletion({
-      messages: [{ role: 'user', content: prompt }],
-      maxTokens: 4096,
-      temperature: 0.2,
-      onChunk: (text) => { result += text },
-      onDone: () => {
-        try {
-          const jsonMatch = result.match(/\{[\s\S]*\}/)
-          if (jsonMatch) {
-            const parsed: unknown = JSON.parse(jsonMatch[0])
-            if (isAssessmentResult(parsed)) {
-              setResult(parsed)
-              setGenerating(false)
-              setTimeout(() => navigate('/results'), 1500)
-              return
-            }
-            // 结构不合格：记录错误详情后走兜底流程（暂不做自动重试/调温度）
-            console.error(
-              'Assessment validation failed:',
-              getAssessmentValidationErrors(parsed)
-            )
-          }
-        } catch (e) { console.error('Assessment parse error:', e) }
-        finishWithFallback()
-      },
-      onError: (err) => {
-        console.error('Assessment request error:', err)
-        finishWithFallback()
-      },
-    })
+    // 最多尝试 MAX_ASSESSMENT_ATTEMPTS 次（首次请求 + 1 次重试）
+    for (let attempt = 1; attempt <= MAX_ASSESSMENT_ATTEMPTS; attempt++) {
+      try {
+        const raw = await requestAssessmentOnce(prompt)
+        const parsed = parseAssessmentResult(raw)
+        if (parsed) {
+          setResult(parsed)
+          setGenerating(false)
+          setTimeout(() => navigate('/results'), 1500)
+          return
+        }
+        console.warn(`[评估] 第 ${attempt} 次解析/校验失败，${attempt < MAX_ASSESSMENT_ATTEMPTS ? '准备重试' : '已达最大尝试次数'}`)
+      } catch (err) {
+        console.error(`[评估] 第 ${attempt} 次请求失败:`, err)
+        break
+      }
+      // 失败：解析/校验失败时继续下一轮；网络错误已在 catch 中退出循环
+    }
+
+    finishWithFallback()
   }
 
   if (!scenario) return null
