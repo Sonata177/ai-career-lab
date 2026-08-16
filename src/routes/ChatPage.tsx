@@ -7,6 +7,10 @@ import { getScenario } from '../data/scenarios'
 import { buildSystemPrompt } from '../prompts/systemPrompt'
 import { buildAssessmentPrompt } from '../prompts/assessmentPrompt'
 import { streamChatCompletion, formatMessagesForAPI } from '../services/deepseek'
+import {
+  isAssessmentResult,
+  getAssessmentValidationErrors,
+} from '../utils/assessmentValidation'
 import { MessageBubble } from '../components/chat/MessageBubble'
 import { ChatInput } from '../components/chat/ChatInput'
 import { TimelineBar } from '../components/chat/TimelineBar'
@@ -360,10 +364,18 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
         try {
           const jsonMatch = result.match(/\{[\s\S]*\}/)
           if (jsonMatch) {
-            setResult(JSON.parse(jsonMatch[0]))
-            setGenerating(false)
-            setTimeout(() => navigate('/results'), 1500)
-            return
+            const parsed: unknown = JSON.parse(jsonMatch[0])
+            if (isAssessmentResult(parsed)) {
+              setResult(parsed)
+              setGenerating(false)
+              setTimeout(() => navigate('/results'), 1500)
+              return
+            }
+            // 结构不合格：记录错误详情后走兜底流程（暂不做自动重试/调温度）
+            console.error(
+              'Assessment validation failed:',
+              getAssessmentValidationErrors(parsed)
+            )
           }
         } catch (e) { console.error('Assessment parse error:', e) }
         finishWithFallback()
