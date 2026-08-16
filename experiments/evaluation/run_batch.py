@@ -1,11 +1,12 @@
 import sys
 import math
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 # ---------- 基础配置 ----------
 BASE_DIR = Path(__file__).resolve().parent            # experiments/evaluation/
-PIPELINE = BASE_DIR / "eval_pipeline.py"              # 子脚本（必填三个参数）
+PIPELINE = BASE_DIR / "eval_pipeline.py"              # 子脚本（必填三个参数 + 可选 batch_id）
 
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1        # 存在失败任务时的批处理退出码
@@ -79,6 +80,9 @@ def parse_args(argv):
       temperatures: 逗号分隔的 0~2 数字列表，如 1,0.8,0.2
       run_id:       每个 level×温度组合重复执行的次数（>0 整数），
                     组合内部子脚本的 run_id 依次取 1,2,...,run_id
+
+    batch_id 不通过命令行传入：每次启动自动生成（YYYYMMDD-HHMMSS），
+    并作为第 4 个参数传给 eval_pipeline.py，结果文件命名为 data/{batch_id}.json。
     示例: python run_batch.py high,mid,low 1,0.8,0.2 5
     """
     if len(argv) != 4:
@@ -91,10 +95,16 @@ def parse_args(argv):
     return parse_levels(argv[1]), parse_temperatures(argv[2]), parse_repeats(argv[3])
 
 
+def generate_batch_id():
+    """自动生成批次标识：YYYYMMDD-HHMMSS（秒级时间戳，天然唯一且自增）。"""
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
 # ---------- 单任务执行 ----------
-def run_one(level, temperature, run_id):
+def run_one(level, temperature, run_id, batch_id):
     """
-    执行一次 eval_pipeline.py（子脚本 run_id 取本次重复的序号）。
+    执行一次 eval_pipeline.py（子脚本 run_id 取本次重复的序号，
+    batch_id 作为第 4 个参数传入，决定结果文件名 data/{batch_id}.json）。
     返回 (level, temperature, run_id, returncode, tail)：
       - returncode: 子脚本退出码（int）；超时则为字符串 "timeout"
       - tail:       失败时子脚本 stderr 尾部内容（用于定位问题）
@@ -105,8 +115,10 @@ def run_one(level, temperature, run_id):
         level,
         str(run_id),
         f"{temperature:g}",                 # 格式化：1 / 0.8 / 0.2，避免浮点尾数
+        batch_id,                           # 结果文件名 = data/{batch_id}.json
     ]
-    print(f"[批处理] 开始任务: level={level} temperature={temperature:g} run_id={run_id}")
+    print(f"[批处理][batch={batch_id}] 开始任务: level={level} "
+          f"temperature={temperature:g} run_id={run_id}")
     try:
         proc = subprocess.run(
             cmd,
@@ -131,10 +143,12 @@ def run_one(level, temperature, run_id):
 # ---------- 主流程 ----------
 def main():
     levels, temperatures, repeats = parse_args(sys.argv)
+    batch_id = generate_batch_id()          # 自动生成批次标识（非参数）
     # 每个 level×温度组合重复 repeats 次，组合内 run_id 依次取 1..repeats
     total = len(levels) * len(temperatures) * repeats
-    print(f"[批处理] levels={levels} 温度集合={temperatures} 每个组合跑 {repeats} 次，"
-          f"共 {total} 个任务")
+    print(f"[批处理][batch={batch_id}] levels={levels} 温度集合={temperatures} "
+          f"每个组合跑 {repeats} 次，共 {total} 个任务")
+    print(f"[批处理][batch={batch_id}] 结果文件: experiments/evaluation/data/{batch_id}.json")
 
     failures = []
     done = 0
@@ -143,23 +157,25 @@ def main():
         for temperature in temperatures:
             for run_id in range(1, repeats + 1):
                 done += 1
-                lv, temp, rid, rc, tail = run_one(level, temperature, run_id)
+                lv, temp, rid, rc, tail = run_one(level, temperature, run_id, batch_id)
                 if rc == EXIT_SUCCESS:
-                    print(f"[批处理] ({done}/{total}) level={lv} temp={temp:g} run={rid} -> 成功")
+                    print(f"[批处理][batch={batch_id}] ({done}/{total}) level={lv} "
+                          f"temp={temp:g} run={rid} -> 成功")
                 else:
                     # 记录失败，继续执行剩余任务（不中断循环）
                     failures.append({
-                        "level": lv, "temperature": temp, "run_id": rid,
-                        "returncode": rc, "stderr_tail": tail,
+                        "batch_id": batch_id, "level": lv, "temperature": temp,
+                        "run_id": rid, "returncode": rc, "stderr_tail": tail,
                     })
-                    print(f"[批处理] ({done}/{total}) level={lv} temp={temp:g} run={rid} "
-                          f"-> 失败 (退出码 {rc})", file=sys.stderr)
+                    print(f"[批处理][batch={batch_id}] ({done}/{total}) level={lv} "
+                          f"temp={temp:g} run={rid} -> 失败 (退出码 {rc})", file=sys.stderr)
 
     # ----- 汇总 -----
     print("-" * 60)
-    print(f"批处理完成: 共 {total} 个任务，成功 {total - len(failures)}，失败 {len(failures)}")
+    print(f"[批处理][batch={batch_id}] 完成: 共 {total} 个任务，"
+          f"成功 {total - len(failures)}，失败 {len(failures)}")
     if failures:
-        print("失败明细:")
+        print(f"[批处理][batch={batch_id}] 失败明细:")
         for f in failures:
             print(f"  - level={f['level']} temperature={f['temperature']:g} "
                   f"run_id={f['run_id']} 退出码={f['returncode']}")

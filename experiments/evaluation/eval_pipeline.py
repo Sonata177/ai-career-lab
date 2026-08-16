@@ -32,6 +32,9 @@ RETRY_BACKOFF = 1
 # 注意：messages 可能很大（数万字符），开启后结果文件会显著膨胀。
 SAVE_REQUEST_BODY = False
 
+# batch_id 允许的字符集（它会用作结果文件名，必须杜绝路径穿越）
+BATCH_ID_ALLOWED = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
 LEVEL_FILE_MAP = {
     "high": "assessment-sample-high.json",
     "mid":  "assessment-sample-mid.json",
@@ -51,21 +54,26 @@ def elapsed_ms(t0):
 
 def parse_args(argv):
     """
-    解析命令行参数（三个参数全部必填）：
-      python eval_pipeline.py <high|mid|low> <run_id> <temperature>
+    解析命令行参数（前三个必填，batch_id 可选）：
+      python eval_pipeline.py <high|mid|low> <run_id> <temperature> [batch_id]
 
     - level:       必填，high/mid/low 之一
     - run_id:      必填，必须为大于 0 的整数（该任务第几次运行）
     - temperature: 必填，0~2 之间的数字（含 0 和 2），覆盖样本文件中的 temperature
+    - batch_id:    可选，本次批次标识（仅允许字母/数字/下划线/连字符）；
+                   提供后结果文件命名为 data/{batch_id}.json，
+                   不提供则回退为按日期命名 data/YYYY-MM-DD.json
 
     校验失败时打印错误信息并退出 EXIT_USAGE。
-    返回 (level, run_id, temperature)。
+    返回 (level, run_id, temperature, batch_id)，batch_id 为 None 表示未指定。
     """
-    if len(argv) != 4:
-        print("用法: python eval_pipeline.py <high|mid|low> <run_id> <temperature>", file=sys.stderr)
+    if len(argv) not in (4, 5):
+        print("用法: python eval_pipeline.py <high|mid|low> <run_id> <temperature> [batch_id]", file=sys.stderr)
         print("  run_id:      必填，大于 0 的整数（该任务第几次运行）", file=sys.stderr)
         print("  temperature: 必填，0~2 之间的数字（含 0 和 2）", file=sys.stderr)
+        print("  batch_id:    可选，批次标识，决定结果文件名（默认按日期命名）", file=sys.stderr)
         print("示例: python eval_pipeline.py high 1 0.2", file=sys.stderr)
+        print("      python eval_pipeline.py high 1 0.2 20260816-153000", file=sys.stderr)
         sys.exit(EXIT_USAGE)
 
     level = argv[1].lower()
@@ -91,10 +99,17 @@ def parse_args(argv):
         print(f"错误: temperature 必须在 0~2 之间（含 0 和 2），收到 '{argv[3]}'", file=sys.stderr)
         sys.exit(EXIT_USAGE)
 
-    return level, run_id, temperature
+    batch_id = None
+    if len(argv) == 5:
+        batch_id = argv[4].strip()
+        if not batch_id or any(c not in BATCH_ID_ALLOWED for c in batch_id):
+            print(f"错误: batch_id 只能包含字母/数字/下划线/连字符，收到 '{argv[4]}'", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
+
+    return level, run_id, temperature, batch_id
 
 
-def build_base_record(level, sample_filename, task_id, run_id, data):
+def build_base_record(level, sample_filename, task_id, run_id, batch_id, data):
     """
     构建一条记录骨架：
     - run 级元信息：同一 run 的所有 attempt 记录共享（run_id / sample / model 等）
@@ -105,6 +120,7 @@ def build_base_record(level, sample_filename, task_id, run_id, data):
         "record_schema": "v2-attempt",      # 记录格式版本，用于区分旧数据
         "sample": level,
         "prompt_file": sample_filename,
+        "batch_id": batch_id,               # 批次标识（None = 单独运行，结果按日期命名）
         "run_id": run_id,                   # 该任务第几次运行（1-based 运行计数，命令行可指定）
         "task_id": task_id,                 # 本次运行实例标识（uuid 前 8 位），每次运行唯一
         "model": data.get("model", "未指定"),
@@ -136,7 +152,7 @@ def build_base_record(level, sample_filename, task_id, run_id, data):
     return record
 
 
-# ---------- 失败处理函数（新增）----------
+# ---------- 失败处理函数（不变）----------
 def handle_failure(record, retry_count, max_attempts, exit_code, exit_msg):
     """
     处理一次失败的尝试（请求失败或响应解析失败）：
@@ -252,12 +268,20 @@ def validate_schema(parsed):
 
     return len(errors) == 0, errors
 
-# ---------- 结果记录函数（不变）----------
+# ---------- 结果记录函数（修改：文件名 = 批次）----------
 def append_result(record):
-    """将单条记录追加到日期命名的 JSON 文件中；若文件损坏则报错退出，不覆盖原文件"""
+    """
+    将单条记录追加到 JSON 文件中；若文件损坏则报错退出，不覆盖原文件。
+    文件名：优先使用 record 中的 batch_id -> data/{batch_id}.json；
+    未指定 batch_id 时按日期命名 -> data/YYYY-MM-DD.json（兼容单独运行）。
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    file_path = DATA_DIR / f"{date_str}.json"
+    batch_id = record.get("batch_id")
+    if batch_id:
+        file_name = f"{batch_id}.json"
+    else:
+        file_name = datetime.now().strftime("%Y-%m-%d") + ".json"
+    file_path = DATA_DIR / file_name
 
     if file_path.exists():
         try:
@@ -280,14 +304,14 @@ def append_result(record):
 # ---------- 主函数 ----------
 def main():
     # ----- 1. 参数检查 -----
-    level, run_id, temperature = parse_args(sys.argv)
+    level, run_id, temperature, batch_id = parse_args(sys.argv)
 
     task_id = str(uuid.uuid4())[:8]
     sample_filename = LEVEL_FILE_MAP[level]
     json_path = BASE_DIR / "experiments" / "temperature" / sample_filename
 
     # 记录骨架（预请求阶段错误也会用它落盘，stage=pre_request，保证每个 run 至少一条记录）
-    record = build_base_record(level, sample_filename, task_id, run_id, {})
+    record = build_base_record(level, sample_filename, task_id, run_id, batch_id, {})
     record["stage"] = "pre_request"
 
     # ----- 文件存在性检查 -----
@@ -356,9 +380,9 @@ def main():
     record["stage"] = "request"
 
     print(f"成功加载: {json_path}")
-    print(f"文件名: {json_path.name}, run_id: {record['run_id']}, model: {record['model']}, "
-          f"temperature: {record['temperature']}, max_tokens: {record['max_tokens']}, "
-          f"messages数量: {len(messages)}")
+    print(f"文件名: {json_path.name}, batch_id: {batch_id}, run_id: {record['run_id']}, "
+          f"model: {record['model']}, temperature: {record['temperature']}, "
+          f"max_tokens: {record['max_tokens']}, messages数量: {len(messages)}")
 
     data["stream"] = False
 
