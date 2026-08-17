@@ -8,6 +8,7 @@ import { buildSystemPrompt } from '../prompts/systemPrompt'
 import { buildAssessmentPrompt } from '../prompts/assessmentPrompt'
 import { streamChatCompletion, formatMessagesForAPI } from '../services/deepseek'
 import { parseAssessmentResult } from '../utils/assessmentParsing'
+import { runAssessmentWithRetry } from '../utils/assessmentRetry'
 import { MessageBubble } from '../components/chat/MessageBubble'
 import { ChatInput } from '../components/chat/ChatInput'
 import { TimelineBar } from '../components/chat/TimelineBar'
@@ -372,23 +373,27 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
       navigate('/results')
     }
 
-    // 最多尝试 MAX_ASSESSMENT_ATTEMPTS 次（首次请求 + 1 次重试）
-    for (let attempt = 1; attempt <= MAX_ASSESSMENT_ATTEMPTS; attempt++) {
-      try {
-        const raw = await requestAssessmentOnce(prompt)
-        const parsed = parseAssessmentResult(raw)
-        if (parsed) {
-          setResult(parsed)
-          setGenerating(false)
-          setTimeout(() => navigate('/results'), 1500)
-          return
+    // 最多尝试 MAX_ASSESSMENT_ATTEMPTS 次（首次请求 + 1 次重试）。
+    // 解析/校验失败会重试；请求本身失败立即终止（语义见 runAssessmentWithRetry）。
+    const parsed = await runAssessmentWithRetry(
+      requestAssessmentOnce,
+      parseAssessmentResult,
+      prompt,
+      MAX_ASSESSMENT_ATTEMPTS,
+      (attempt, err) => {
+        if (err) {
+          console.error(`[评估] 第 ${attempt} 次请求失败:`, err)
+        } else {
+          console.warn(`[评估] 第 ${attempt} 次解析/校验失败，${attempt < MAX_ASSESSMENT_ATTEMPTS ? '准备重试' : '已达最大尝试次数'}`)
         }
-        console.warn(`[评估] 第 ${attempt} 次解析/校验失败，${attempt < MAX_ASSESSMENT_ATTEMPTS ? '准备重试' : '已达最大尝试次数'}`)
-      } catch (err) {
-        console.error(`[评估] 第 ${attempt} 次请求失败:`, err)
-        break
       }
-      // 失败：解析/校验失败时继续下一轮；网络错误已在 catch 中退出循环
+    )
+
+    if (parsed) {
+      setResult(parsed)
+      setGenerating(false)
+      setTimeout(() => navigate('/results'), 1500)
+      return
     }
 
     finishWithFallback()
