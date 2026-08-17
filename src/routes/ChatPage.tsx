@@ -7,10 +7,7 @@ import { getScenario } from '../data/scenarios'
 import { buildSystemPrompt } from '../prompts/systemPrompt'
 import { buildAssessmentPrompt } from '../prompts/assessmentPrompt'
 import { streamChatCompletion, formatMessagesForAPI } from '../services/deepseek'
-import {
-  isAssessmentResult,
-  getAssessmentValidationErrors,
-} from '../utils/assessmentValidation'
+import { parseAssessmentResult } from '../utils/assessmentParsing'
 import { MessageBubble } from '../components/chat/MessageBubble'
 import { ChatInput } from '../components/chat/ChatInput'
 import { TimelineBar } from '../components/chat/TimelineBar'
@@ -21,7 +18,6 @@ import { IdleHint } from '../components/chat/IdleHint'
 import { ColleagueDrawer, type ColleagueMessage } from '../components/chat/ColleagueDrawer'
 import type { ChatMessage } from '../types/chat'
 import type { ScenarioPhase } from '../types/job'
-import type { AssessmentResult } from '../types/assessment'
 import './ChatPage.css'
 
 const TASK_ICONS: Record<string, string> = {
@@ -57,30 +53,6 @@ function requestAssessmentOnce(prompt: string): Promise<string> {
       onError: (err) => reject(err),
     })
   })
-}
-
-/**
- * 解析并校验评估结果：
- * 提取 JSON -> JSON.parse 为 unknown -> isAssessmentResult 运行时校验
- * 合格返回 AssessmentResult；解析或校验失败返回 null 并记录错误。
- */
-function parseAssessmentResult(raw: string): AssessmentResult | null {
-  try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      console.error('Assessment parse failed: 未找到 JSON 片段')
-      return null
-    }
-    const parsed: unknown = JSON.parse(jsonMatch[0])
-    if (isAssessmentResult(parsed)) {
-      return parsed
-    }
-    console.error('Assessment validation failed:', getAssessmentValidationErrors(parsed))
-    return null
-  } catch (e) {
-    console.error('Assessment parse error:', e)
-    return null
-  }
 }
 
 export function ChatPage() {
