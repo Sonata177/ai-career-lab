@@ -113,3 +113,42 @@ describe('createApp', () => {
     expect(res.body).toEqual(upstreamData)
   })
 })
+
+describe('参数默认值与边界限制（stream=false + JSON mock）', () => {
+  const upstreamData = {
+    choices: [{ message: { role: 'assistant', content: '{}' } }],
+  }
+
+  /** 发送请求并返回 fetchMock（供检查上游请求体） */
+  async function sendWith(params) {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(upstreamData), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: '你好' }], stream: false, ...params })
+
+    expect(res.status).toBe(200)
+    return fetchMock
+  }
+
+  it.each([
+    ['不传参数', {}, 0.8, 1024],
+    ['传正常值', { temperature: 0.2, max_tokens: 4096 }, 0.2, 4096],
+    ['超出上限', { temperature: 3, max_tokens: 10000 }, 2, 8192],
+    ['温度低于下限', { temperature: -1 }, 0, 1024],
+  ])('%s：上游请求体 temperature=%s, max_tokens=%s', async (_name, params, expectedTemp, expectedTokens) => {
+    const fetchMock = await sendWith(params)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(init.body)
+    expect(body.temperature).toBe(expectedTemp)
+    expect(body.max_tokens).toBe(expectedTokens)
+  })
+})
