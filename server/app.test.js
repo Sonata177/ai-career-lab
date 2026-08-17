@@ -194,3 +194,53 @@ describe('错误类型参数返回 400', () => {
   it('model 传数字 123 返回 400', () =>
     expectRejected({ messages: VALID_MESSAGES, model: 123 }, 'model'))
 })
+
+describe('上游接口异常', () => {
+  const VALID_BODY = { messages: [{ role: 'user', content: '你好' }], stream: false }
+
+  it.each([
+    ['401', 401, 'Invalid API key'],
+    ['429', 429, 'Rate limit exceeded'],
+    ['500', 500, 'Upstream exploded'],
+  ])('DeepSeek 返回 %s：透传状态码 + 通用错误，不泄露 API Key 或上游原始信息', async (_name, status, upstreamMessage) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: upstreamMessage } }), { status })
+    )
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send(VALID_BODY)
+
+    // 状态码透传，body 为通用错误
+    expect(res.status).toBe(status)
+    expect(res.body).toEqual({ error: 'AI service error' })
+
+    // API Key 只出现在上游请求头中，绝不回显到响应
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.headers.Authorization).toBe('Bearer test-api-key')
+
+    // 响应不包含 API Key，也不包含上游原始错误信息
+    const bodyText = JSON.stringify(res.body)
+    expect(bodyText).not.toContain('test-api-key')
+    expect(bodyText).not.toContain(upstreamMessage)
+  })
+
+  it('fetch 抛出网络错误：返回 500 通用错误，不泄露错误详情', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('fetch failed: connection refused'))
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send(VALID_BODY)
+
+    expect(res.status).toBe(500)
+    expect(res.body).toEqual({ error: 'Internal server error' })
+
+    // 不泄露网络错误详情
+    const bodyText = JSON.stringify(res.body)
+    expect(bodyText).not.toContain('fetch failed')
+    expect(bodyText).not.toContain('connection refused')
+  })
+})
