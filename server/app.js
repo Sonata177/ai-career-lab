@@ -39,6 +39,9 @@ export function createApp({ apiKey, fetchImpl = fetch }) {
 
   app.post('/api/chat/completions', async (req, res) => {
     const { messages, stream, temperature, max_tokens, model } = req.body
+    // 统一使用带默认值的 stream：请求体与响应分支必须一致（否则未传 stream 时
+    // 上游按 SSE 返回、本地却走 JSON 分支，response.json() 会解析失败）
+    const effectiveStream = stream ?? true
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages is required' })
@@ -64,7 +67,7 @@ export function createApp({ apiKey, fetchImpl = fetch }) {
         body: JSON.stringify({
           model: model || 'deepseek-chat',
           messages,
-          stream: stream ?? true,
+          stream: effectiveStream,
           temperature: Math.min(Math.max(temperature ?? 0.8, 0), 2),
           max_tokens: Math.min(max_tokens ?? 1024, 8192),
         }),
@@ -76,7 +79,7 @@ export function createApp({ apiKey, fetchImpl = fetch }) {
         return res.status(response.status).json({ error: 'AI service error' })
       }
 
-      if (stream) {
+      if (effectiveStream) {
         res.setHeader('Content-Type', 'text/event-stream')
         res.setHeader('Cache-Control', 'no-cache')
         res.setHeader('Connection', 'keep-alive')

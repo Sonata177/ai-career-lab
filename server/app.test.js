@@ -9,6 +9,20 @@ function makeApp() {
   return { app, fetchMock }
 }
 
+/** 把 SSE 字符串片段编码为上游响应流 */
+function createSseResponse(chunks) {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk))
+      }
+      controller.close()
+    },
+  })
+  return new Response(stream, { status: 200 })
+}
+
 describe('createApp', () => {
   it('GET /api/health 返回 200 和 { status: "ok" }', async () => {
     const { app } = makeApp()
@@ -29,5 +43,31 @@ describe('createApp', () => {
     expect(res.status).toBe(400)
     expect(res.body).toEqual({ error: 'messages is required' })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('请求不传 stream 时：上游收到 stream=true，本地以 SSE 返回 200', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(createSseResponse([
+      'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]))
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: '你好' }] })
+
+    // 1. 发给上游的 stream 必须为 true（未传时走默认值）
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse(init.body)
+    expect(upstreamBody.stream).toBe(true)
+
+    // 2. 本地响应应为 SSE 流
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('text/event-stream')
+
+    // 3. 响应体完整透传了上游 SSE 内容
+    expect(res.text).toContain('"content":"你"')
+    expect(res.text).toContain('data: [DONE]')
   })
 })
