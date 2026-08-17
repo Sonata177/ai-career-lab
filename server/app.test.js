@@ -1,6 +1,15 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import request from 'supertest'
 import { createApp } from './app.js'
+
+// 测试期间静默 app.js 的服务端错误日志（生产环境保留；避免 stderr 噪声干扰测试输出）
+beforeEach(() => {
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 /** 构造带假 apiKey 和 mock fetch 的应用 */
 function makeApp() {

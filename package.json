@@ -8,9 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "check": "npm run lint && npm test && npm run build"
+    "test": "vitest run src",
+    "test:watch": "vitest src",
+    "test:server": "npm --prefix server test",
+    "check": "npm run lint && npm test && npm run test:server && npm run build"
   },
   "dependencies": {
     "framer-motion": "^12.40.0",
