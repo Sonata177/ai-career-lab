@@ -38,6 +38,26 @@ function randomizePhase(phase: ScenarioPhase): ScenarioPhase {
 /** 评估请求总次数上限：首次请求 + 1 次重试 */
 const MAX_ASSESSMENT_ATTEMPTS = 2
 
+/** 构造"跳过任务"的用户消息（模块级函数，事件回调中调用，避免渲染期纯度规则误报） */
+function buildSkipMessage(phase: ScenarioPhase): ChatMessage {
+  return {
+    id: `skip-${Date.now()}`,
+    role: 'user',
+    content: `[用户跳过了本轮任务：${phase.title}，未作任何回复]`,
+    timestamp: Date.now(),
+  }
+}
+
+/** 构造普通用户消息（模块级函数，事件回调中调用） */
+function buildUserMessage(text: string): ChatMessage {
+  return {
+    id: `user-${Date.now()}`,
+    role: 'user',
+    content: text,
+    timestamp: Date.now(),
+  }
+}
+
 /**
  * 单次评估请求：把回调式 streamChatCompletion 包装成 Promise。
  * 注意：result 必须在函数内部累积，否则第二次请求会拼接在第一次的错误内容后面。
@@ -78,9 +98,11 @@ export function ChatPage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const storeScenario = useJobStore((s) => s.scenarioConfig)
-  const scenarioRef = useRef(storeScenario || (selectedJob ? getScenario(selectedJob.id) : null))
-  const scenario = scenarioRef.current
+  // 场景配置在挂载时固定一次（原为 useRef，渲染期读取 ref 会被 react-hooks/refs 规则拦截）
+  const [scenario] = useState(() => storeScenario || (selectedJob ? getScenario(selectedJob.id) : null))
   const initRef = useRef(false)
+  // 当前场景的阶段数组：逻辑侧仍用 ref（事件/effect 中读写），渲染侧用 state
+  const [activePhases, setActivePhases] = useState<ScenarioPhase[]>([])
   const activePhasesRef = useRef<ScenarioPhase[]>([])
   const dayStartedRef = useRef(0)
   const startedPhasesRef = useRef<Set<number>>(new Set())
@@ -94,7 +116,8 @@ export function ChatPage() {
 
   const resetIdleTimer = () => {
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
-    setShowIdleHint(false)
+    // 隐藏提示的 setState 放到异步回调中，避免在 effect 内同步调用 setState
+    setTimeout(() => setShowIdleHint(false), 0)
     idleTimerRef.current = setTimeout(() => setShowIdleHint(true), 120000)
   }
 
@@ -103,65 +126,7 @@ export function ChatPage() {
       resetIdleTimer()
     }
     return () => { if (idleTimerRef.current) clearTimeout(idleTimerRef.current) }
-  }, [isLoading, isComplete, showTaskSelector])
-
-  useEffect(() => {
-    if (!selectedJob || !scenario) {
-      navigate('/select')
-      return
-    }
-
-    const generateNow = (location.state as any)?.generateNow
-    if (generateNow) {
-      generateAssessment()
-      return
-    }
-
-    if (initRef.current && activePhasesRef.current.length > 0) {
-      if (dayStartedRef.current === currentDay) return
-      dayStartedRef.current = currentDay
-      startedPhasesRef.current.clear()
-      const dayPhases = activePhasesRef.current.filter((p) => p.day === currentDay)
-      if (dayPhases.length > 0) {
-        const firstPhaseOfDay = activePhasesRef.current.indexOf(dayPhases[0])
-        setPhaseIndex(firstPhaseOfDay)
-        const tl = activePhasesRef.current
-          .filter((p) => p.day === currentDay)
-          .map((p, i) => ({
-            time: p.time,
-            title: p.title,
-            status: i === 0 ? 'active' as const : 'pending' as const,
-          }))
-        setTimeline(tl)
-        showRoleNotification(dayPhases[0])
-        startPhase(firstPhaseOfDay)
-      }
-      return
-    }
-
-    if (initRef.current) return
-    initRef.current = true
-    const day = useChatStore.getState().currentDay
-    dayStartedRef.current = day
-    startedPhasesRef.current.clear()
-    reset()
-
-    const randomized = scenario.phases.map(randomizePhase)
-    activePhasesRef.current = randomized
-
-    const dayPhases = randomized.filter((p) => p.day === day)
-    if (dayPhases.length === 0) return
-    const firstPhaseOfDay = randomized.indexOf(dayPhases[0])
-    setPhaseIndex(firstPhaseOfDay)
-    const tl = dayPhases.map((p, i) => ({
-      time: p.time,
-      title: p.title,
-      status: i === 0 ? 'active' as const : 'pending' as const,
-    }))
-    setTimeline(tl)
-    showRoleNotification(dayPhases[0])
-    startPhase(firstPhaseOfDay)
-  }, [currentDay])
+  }, [isLoading, isComplete, showTaskSelector, messages.length])
 
   // PLACEHOLDER_FUNCTIONS
 
@@ -169,22 +134,7 @@ export function ChatPage() {
     setRoleNotif({ visible: true, role: phase.role, desc: phase.roleDescription })
   }
 
-  const startPhase = useCallback((phaseIndex: number) => {
-    if (!activePhasesRef.current.length) return
-    const phase = activePhasesRef.current[phaseIndex]
-    if (!phase) return
-    if (startedPhasesRef.current.has(phaseIndex)) return
-    startedPhasesRef.current.add(phaseIndex)
-    addMessage({
-      id: `sys-${Date.now()}`,
-      role: 'system',
-      content: `⏰ ${phase.time} — ${phase.title}`,
-      timestamp: Date.now(),
-    })
-    sendAIMessage(phaseIndex, [])
-  }, [])
-
-  const sendAIMessage = async (phaseIndex: number, extraMessages: ChatMessage[]) => {
+  const sendAIMessage = useCallback(async (phaseIndex: number, extraMessages: ChatMessage[]) => {
     if (!scenario || !activePhasesRef.current.length) return
     const phase = activePhasesRef.current[phaseIndex]
     if (!phase) return
@@ -233,7 +183,22 @@ export function ChatPage() {
         addMessage({ id: `err-${Date.now()}`, role: 'system', content: '网络错误，请重试。', timestamp: Date.now() })
       },
     })
-  }
+  }, [scenario, addMessage, setLoading])
+
+  const startPhase = useCallback((phaseIndex: number) => {
+    if (!activePhasesRef.current.length) return
+    const phase = activePhasesRef.current[phaseIndex]
+    if (!phase) return
+    if (startedPhasesRef.current.has(phaseIndex)) return
+    startedPhasesRef.current.add(phaseIndex)
+    addMessage({
+      id: `sys-${Date.now()}`,
+      role: 'system',
+      content: `⏰ ${phase.time} — ${phase.title}`,
+      timestamp: Date.now(),
+    })
+    sendAIMessage(phaseIndex, [])
+  }, [addMessage, sendAIMessage])
 
   // PLACEHOLDER_HANDLERS
 
@@ -247,12 +212,7 @@ export function ChatPage() {
   const handleSkipPhase = () => {
     const phase = activePhasesRef.current[currentPhaseIndex]
     if (phase) {
-      addMessage({
-        id: `skip-${Date.now()}`,
-        role: 'user',
-        content: `[用户跳过了本轮任务：${phase.title}，未作任何回复]`,
-        timestamp: Date.now(),
-      })
+      addMessage(buildSkipMessage(phase))
     }
     showNextTaskOptions()
   }
@@ -292,9 +252,7 @@ export function ChatPage() {
   const handleSend = async (text: string) => {
     if (!scenario || isComplete || showTaskSelector) return
     resetIdleTimer()
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`, role: 'user', content: text, timestamp: Date.now(),
-    }
+    const userMsg = buildUserMessage(text)
     addMessage(userMsg)
     incrementUserMessages()
 
@@ -352,7 +310,7 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
     })
   }
 
-  const generateAssessment = async () => {
+  const generateAssessment = useCallback(async () => {
     if (!scenario) return
     setGenerating(true)
     setComplete()
@@ -397,10 +355,70 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
     }
 
     finishWithFallback()
-  }
+  }, [scenario, colleagueMessages, navigate, setComplete, setGenerating, setResult])
+
+  // 初始化/换天 effect：声明放在其引用的函数之后（react-hooks/immutability 要求先声明后使用）
+  useEffect(() => {
+    if (!selectedJob || !scenario) {
+      navigate('/select')
+      return
+    }
+
+    const generateNow = (location.state as { generateNow?: boolean } | null)?.generateNow
+    if (generateNow) {
+      generateAssessment()
+      return
+    }
+
+    if (initRef.current && activePhasesRef.current.length > 0) {
+      if (dayStartedRef.current === currentDay) return
+      dayStartedRef.current = currentDay
+      startedPhasesRef.current.clear()
+      const dayPhases = activePhasesRef.current.filter((p) => p.day === currentDay)
+      if (dayPhases.length > 0) {
+        const firstPhaseOfDay = activePhasesRef.current.indexOf(dayPhases[0])
+        setPhaseIndex(firstPhaseOfDay)
+        const tl = activePhasesRef.current
+          .filter((p) => p.day === currentDay)
+          .map((p, i) => ({
+            time: p.time,
+            title: p.title,
+            status: i === 0 ? 'active' as const : 'pending' as const,
+          }))
+        setTimeline(tl)
+        showRoleNotification(dayPhases[0])
+        startPhase(firstPhaseOfDay)
+      }
+      return
+    }
+
+    if (initRef.current) return
+    initRef.current = true
+    const day = useChatStore.getState().currentDay
+    dayStartedRef.current = day
+    startedPhasesRef.current.clear()
+    reset()
+
+    const randomized = scenario.phases.map(randomizePhase)
+    activePhasesRef.current = randomized
+    setActivePhases(randomized)
+
+    const dayPhases = randomized.filter((p) => p.day === day)
+    if (dayPhases.length === 0) return
+    const firstPhaseOfDay = randomized.indexOf(dayPhases[0])
+    setPhaseIndex(firstPhaseOfDay)
+    const tl = dayPhases.map((p, i) => ({
+      time: p.time,
+      title: p.title,
+      status: i === 0 ? 'active' as const : 'pending' as const,
+    }))
+    setTimeline(tl)
+    showRoleNotification(dayPhases[0])
+    startPhase(firstPhaseOfDay)
+  }, [currentDay, generateAssessment, location.state, navigate, reset, scenario, selectedJob, setPhaseIndex, setTimeline, startPhase])
 
   if (!scenario) return null
-  const currentPhase = activePhasesRef.current[currentPhaseIndex]
+  const currentPhase = activePhases[currentPhaseIndex]
 
   // PLACEHOLDER_RENDER
 

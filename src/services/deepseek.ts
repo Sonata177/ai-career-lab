@@ -62,7 +62,9 @@ export async function streamChatCompletion({
           const parsed = JSON.parse(data)
           const content = parsed.choices?.[0]?.delta?.content
           if (content) onChunk(content)
-        } catch {}
+        } catch {
+          // 忽略无法解析的行（非 JSON 的 data 片段，如心跳或空内容）
+        }
       }
     }
     onDone()

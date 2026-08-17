@@ -40,7 +40,8 @@ describe('parseAssessmentResult', () => {
 
   it('JSON 语法正确但缺少 dimensions 返回 null', () => {
     const valid = createValidAssessment()
-    const { dimensions: _omit, ...rest } = valid
+    const rest = { ...valid }
+    delete (rest as { dimensions?: unknown }).dimensions
     expect(parseAssessmentResult(JSON.stringify(rest))).toBeNull()
   })
 

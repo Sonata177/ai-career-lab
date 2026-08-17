@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import './IdleHint.css'
 
@@ -17,7 +17,8 @@ interface Props {
 }
 
 export function IdleHint({ visible, onDismiss }: Props) {
-  const hint = HINTS[Math.floor(Math.random() * HINTS.length)]
+  // 惰性初始化：仅在挂载时随机选取一次提示语（避免渲染期调用 Math.random）
+  const [hint] = useState(() => HINTS[Math.floor(Math.random() * HINTS.length)])
 
   useEffect(() => {
     if (visible) {

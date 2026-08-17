@@ -23,7 +23,9 @@ describe('isAssessmentResult', () => {
   })
 
   it('缺少 dimensions 返回 false', () => {
-    const { dimensions: _omit, ...rest } = createValidAssessment()
+    const valid = createValidAssessment()
+    const rest = { ...valid }
+    delete (rest as { dimensions?: unknown }).dimensions
     expect(isAssessmentResult(rest)).toBe(false)
   })
 
