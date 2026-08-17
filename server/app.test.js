@@ -152,3 +152,45 @@ describe('参数默认值与边界限制（stream=false + JSON mock）', () => {
     expect(body.max_tokens).toBe(expectedTokens)
   })
 })
+
+describe('错误类型参数返回 400', () => {
+  const VALID_MESSAGES = [{ role: 'user', content: '你好' }]
+
+  /** 发送 body，断言 400 + 错误消息包含关键字 + fetch 不被调用 */
+  async function expectRejected(body, errorKeyword) {
+    const fetchMock = vi.fn()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send(body)
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toContain(errorKeyword)
+    expect(fetchMock).not.toHaveBeenCalled()
+  }
+
+  it('stream 传字符串 "false" 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, stream: 'false' }, 'stream'))
+
+  it('stream 传数字 1 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, stream: 1 }, 'stream'))
+
+  it('stream 传 null 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, stream: null }, 'stream'))
+
+  it('temperature 传字符串 "0.5" 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, temperature: '0.5' }, 'temperature'))
+
+  it('max_tokens 传字符串 "1024" 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, max_tokens: '1024' }, 'max_tokens'))
+
+  it('max_tokens 传小数 100.5 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, max_tokens: 100.5 }, 'max_tokens'))
+
+  it('max_tokens 传负数 -5 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, max_tokens: -5 }, 'max_tokens'))
+
+  it('model 传数字 123 返回 400', () =>
+    expectRejected({ messages: VALID_MESSAGES, model: 123 }, 'model'))
+})
