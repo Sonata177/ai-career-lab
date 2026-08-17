@@ -70,4 +70,46 @@ describe('createApp', () => {
     expect(res.text).toContain('"content":"你"')
     expect(res.text).toContain('data: [DONE]')
   })
+
+  it('请求传 stream=false 时：上游收到 stream=false，本地以 JSON 原样返回', async () => {
+    const upstreamData = {
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '{"overallScore":78}',
+          },
+        },
+      ],
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(upstreamData), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send({
+        messages: [{ role: 'user', content: '你好' }],
+        stream: false,
+      })
+
+    // 1. fetchMock 只调用一次
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // 2. 上游请求体中的 stream 严格等于 false
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse(init.body)
+    expect(upstreamBody.stream).toBe(false)
+
+    // 3/4. 本地响应为 JSON 200
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('application/json')
+
+    // 5. 响应体与上游数据完全相等
+    expect(res.body).toEqual(upstreamData)
+  })
 })
