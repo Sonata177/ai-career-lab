@@ -22,7 +22,7 @@
 
 项目分前端和后端两部分，需分别启动。
 
-### 1. 配置后端密钥
+### 1. 配置后端环境变量
 
 复制模板并填入你的 DeepSeek API 密钥：
 
@@ -31,13 +31,23 @@ cp server/.env.example server/.env
 # 编辑 server/.env，填入 DEEPSEEK_API_KEY
 ```
 
-`server/.env` 字段说明：
+#### 环境变量总览
+
+| 变量 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `DEEPSEEK_API_KEY` | ✅ 必填 | 无 | DeepSeek API 密钥。缺失时后端启动会报错退出（`DEEPSEEK_API_KEY environment variable is required`）。密钥只存在于 `server/.env`，仅由后端使用，**不会下发到前端** |
+| `PORT` | 可选 | `3001` | 后端监听端口。部署时如与容器端口冲突可修改（需同步 nginx/docker-compose 配置） |
+| `ALLOWED_ORIGINS` | 可选 | `http://localhost:5173` | CORS 白名单，**逗号分隔**（不要带空格）。本地开发默认放行 Vite 地址；生产/联调时必须改为线上域名，否则浏览器跨域请求会被拒绝 |
+
+`server/.env` 示例：
 
 ```
-DEEPSEEK_API_KEY=你的DeepSeek密钥
+DEEPSEEK_API_KEY=sk-你的DeepSeek密钥
 PORT=3001
-ALLOWED_ORIGINS=http://localhost:5173
+ALLOWED_ORIGINS=http://localhost:5173,https://yourdomain.com
 ```
+
+> 根目录的 `.env` 仅是前端占位文件（不含任何密钥）；`server/.env` 已被 `.gitignore` 忽略（含根 `.env`），不会提交到仓库。
 
 ### 2. 启动后端（端口 3001）
 
@@ -69,8 +79,10 @@ npm run build   # 前端产物输出到 dist/
 服务器需安装 Docker。在项目根目录：
 
 ```bash
-cp server/.env.example server/.env   # 填入密钥，并把 ALLOWED_ORIGINS 改为线上地址
+cp server/.env.example server/.env   # 填入 DEEPSEEK_API_KEY，并把 ALLOWED_ORIGINS 改为线上域名
 docker compose up -d --build
 ```
 
 Nginx 监听 80 端口对外提供服务，并将 `/api` 反向代理到后端容器（3001）。
+
+> 部署前务必检查 `server/.env`：`DEEPSEEK_API_KEY` 必须为真实密钥，`ALLOWED_ORIGINS` 必须包含你的线上域名（如 `https://yourdomain.com`），否则前端请求会被 CORS 拦截。
