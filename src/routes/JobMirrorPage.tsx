@@ -8,6 +8,7 @@ import { getScenario } from '../data/scenarios'
 import { jobs } from '../data/jobs'
 import { buildScenarioGenerationPrompt } from '../prompts/scenarioPrompt'
 import { isMirrorResult, type MirrorResult } from '../utils/mirrorValidation'
+import { isGeneratedScenarioConfig } from '../utils/scenarioValidation'
 import type { ScenarioConfig } from '../types/job'
 import './JobMirrorPage.css'
 
@@ -112,8 +113,15 @@ export function JobMirrorPage() {
         try {
           const jsonMatch = content.match(/\{[\s\S]*\}/)
           if (!jsonMatch) throw new Error('no json')
-          const config: ScenarioConfig = JSON.parse(jsonMatch[0])
-          config.jobId = `custom-${Date.now()}`
+          const parsed: unknown = JSON.parse(jsonMatch[0])
+          if (!isGeneratedScenarioConfig(parsed)) {
+            throw new Error('invalid scenario config structure') // 结构校验失败，不信任模型返回
+          }
+          // 不直接修改解析对象：复制后补上 jobId（模型不可信，jobId 由页面生成）
+          const config: ScenarioConfig = {
+            ...parsed,
+            jobId: `custom-${Date.now()}`,
+          }
           setScenarioConfig(config)
           setSelectedJob({
             id: config.jobId,

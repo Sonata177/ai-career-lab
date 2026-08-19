@@ -179,3 +179,55 @@ test('分析返回 200 + 合法 JSON 但字段缺失（{}）：显示格式错�
   await expect(analyzeBtn).toBeEnabled()
   await expect(page.getByText('正在解析...')).toBeHidden()
 })
+
+test('分析成功但场景生成返回 {}：停留在岗位真相镜并显示"场景生成失败"', async ({ page }) => {
+  test.setTimeout(60000)
+
+  // 场景生成请求返回 {}（合法 JSON 但结构不满足 isGeneratedScenarioConfig）
+  const EMPTY_OBJECT_SSE = 'data: ' + JSON.stringify({
+    choices: [{ delta: { content: '{}' } }],
+  }) + '\n\ndata: [DONE]\n\n'
+
+  let requestCount = 0
+  await page.route('**/api/chat/completions', async (route) => {
+    requestCount++
+    const content = (route.request().postDataJSON()?.messages?.[0]?.content as string) ?? ''
+    if (content.includes('资深的职业分析师')) {
+      // 第 1 次：分析请求 → 合法结果
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: MIRROR_SSE,
+      })
+      return
+    }
+    // 第 2 次：场景生成请求 → {}
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: EMPTY_OBJECT_SSE,
+    })
+  })
+
+  await page.goto('/mirror')
+  await page.getByPlaceholder(/在这里粘贴完整的岗位描述/).fill(
+    '岗位职责：负责公司产品的日常运营。任职要求：本科及以上学历。'
+  )
+  await page.getByRole('button', { name: /开始解析岗位/ }).click()
+  await expect(page.getByText(MIRROR_RESULT.summary)).toBeVisible()
+
+  // 点击"开始体验「运营专员」"（summary 不匹配内置岗位 → 走场景生成接口）
+  const startBtn = page.getByRole('button', { name: /开始体验「运营专员」/ })
+  await startBtn.click()
+
+  // 页面停留在岗位真相镜，显示场景生成失败
+  await expect(page).toHaveURL(/\/mirror$/)
+  await expect(page.getByText('场景生成失败，请重试')).toBeVisible()
+
+  // 加载结束：按钮恢复可用
+  await expect(startBtn).toBeEnabled()
+  await expect(page.getByText('生成体验场景中...')).toBeHidden()
+
+  // 恰好 2 次请求：分析 1 次 + 场景生成 1 次
+  expect(requestCount).toBe(2)
+})
