@@ -32,3 +32,9 @@ experiments/evaluation/data/*.json
 test-results/
 playwright-report/
 blob-report/
+
+# Local development launchers
+start-dev.bat
+start-dev.ps1
+stop-dev.bat
+启动前后端.lnk
