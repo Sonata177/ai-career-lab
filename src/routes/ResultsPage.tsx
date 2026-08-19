@@ -19,6 +19,30 @@ export function ResultsPage() {
     navigate('/chat')
   }
 
+  const handleExport = () => {
+    if (!result) return
+
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      jobTitle: selectedJob?.title || '岗位体验',
+      result,
+    }
+
+    // JSON.stringify(..., null, 2) 让下载文件可读
+    const blob = new Blob(
+      [JSON.stringify(exportData, null, 2)],
+      { type: 'application/json;charset=utf-8' }
+    )
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+
+    link.href = url
+    link.download = 'assessment-report.json'
+    link.click()
+
+    URL.revokeObjectURL(url) // 释放临时 URL，防止内存占用
+  }
+
   if (!result) {
     return (
       <div className="results-loading">
@@ -140,6 +164,9 @@ export function ResultsPage() {
         <div className="results-actions">
           <button className="btn btn-primary" onClick={() => navigate('/select')}>
             体验其他岗位
+          </button>
+          <button className="btn btn-secondary-dark" onClick={handleExport}>
+            导出评估报告
           </button>
           <button className="btn btn-secondary-dark" onClick={() => navigate('/chat')}>
             返回对话

@@ -86,3 +86,32 @@ test('结果页"返回首页 / 体验其他岗位 / 返回对话"：均能正确
   await expect(page).toHaveURL(/\/chat$/)
   await expect(page.getByText('运营实习生的一天 · Day 1')).toBeVisible()
 })
+
+test('结果页"导出评估报告"：触发下载，文件名与内容正确', async ({ page }) => {
+  test.setTimeout(60000)
+  await mockApi(page)
+
+  await reachDay1Complete(page)
+  await page.getByRole('button', { name: '生成评估报告' }).click()
+  await expect(page).toHaveURL(/\/results$/, { timeout: 15000 })
+
+  // 触发下载并捕获事件
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出评估报告' }).click()
+  const download = await downloadPromise
+
+  // 文件名断言
+  expect(download.suggestedFilename()).toBe('assessment-report.json')
+
+  // 读取文件内容：exportedAt / jobTitle / result 结构完整
+  const stream = await download.createReadStream()
+  let fileText = ''
+  for await (const chunk of stream) {
+    fileText += chunk
+  }
+  const content = JSON.parse(fileText)
+  expect(content.exportedAt).toBeTruthy()
+  expect(content.jobTitle).toBe('运营实习生的一天')
+  expect(content.result.overallScore).toBe(78)
+  expect(content.result.dimensions).toHaveLength(7)
+})
