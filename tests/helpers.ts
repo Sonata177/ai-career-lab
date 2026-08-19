@@ -98,6 +98,42 @@ export const MIRROR_SSE = mirrorSse(MIRROR_RESULT)
 /** 分析接口返回 {}（合法 JSON、字段缺失 → 结构校验失败） */
 export const EMPTY_OBJECT_SSE = mirrorSse({})
 
+/** 构造合法阶段（满足 isGeneratedScenarioConfig 的 phase 要求） */
+function scenarioPhase(id: string, day: number, role: string, title: string) {
+  return {
+    id,
+    day,
+    time: '09:00',
+    role,
+    roleDescription: '角色简介',
+    title,
+    description: '任务描述',
+    systemPrompt: '你扮演该角色与实习生互动，每次回复控制在60字以内。',
+    messageThreshold: 3,
+    scoringDimensions: ['沟通表达', '执行落地'],
+  }
+}
+
+/** 合法自定义场景（7 阶段，Day1×3 + Day2×2 + Day3×2；jobId 页面会覆盖） */
+export const GENERATED_SCENARIO = {
+  jobId: 'custom-ignore',
+  jobTitle: '数据分析师',
+  background: '一家互联网公司的数据分析部门',
+  userIdentity: '刚入职一周的数据分析实习生',
+  phases: [
+    scenarioPhase('day1-task1', 1, '主管·张姐', '数据需求'),
+    scenarioPhase('day1-task2', 1, '同事·小李', '数据清洗'),
+    scenarioPhase('day1-task3', 1, '主管·张姐', '日报汇报'),
+    scenarioPhase('day2-task1', 2, '产品·小王', '指标对齐'),
+    scenarioPhase('day2-task2', 2, '客户·陈总', '需求沟通'),
+    scenarioPhase('day3-task1', 3, '同事·小李', '分析报告'),
+    scenarioPhase('day3-task2', 3, '主管·张姐', '总结复盘'),
+  ],
+}
+
+/** 场景生成接口返回（合法七阶段配置） */
+export const GENERATED_SCENARIO_SSE = mirrorSse(GENERATED_SCENARIO)
+
 /** 在已打开的 /mirror 页面填写 JD 并点击分析，返回分析按钮定位器 */
 export async function fillJdAndAnalyze(page: Page, jdText: string = DEFAULT_JD_TEXT) {
   const analyzeBtn = page.getByRole('button', { name: /开始解析岗位/ })
