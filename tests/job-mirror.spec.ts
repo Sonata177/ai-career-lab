@@ -3,6 +3,8 @@ import {
   MIRROR_RESULT,
   MIRROR_SSE,
   EMPTY_OBJECT_SSE,
+  GENERATED_SCENARIO_SSE,
+  CHAT_SSE,
   rawSse,
   fillJdAndAnalyze,
   analyzeJd,
@@ -168,4 +170,43 @@ test('分析成功但场景生成返回 {}：停留在岗位真相镜并显示"�
 
   // 恰好 2 次请求：分析 1 次 + 场景生成 1 次
   expect(requestCount).toBe(2)
+})
+
+test('分析成功 → 开始体验 → 生成合法场景 → 进入 /chat 显示自定义岗位和 Day 1', async ({ page }) => {
+  test.setTimeout(60000)
+
+  let requestCount = 0
+  await page.route('**/api/chat/completions', async (route) => {
+    requestCount++
+    const content = (route.request().postDataJSON()?.messages?.[0]?.content as string) ?? ''
+    if (content.includes('资深的职业分析师')) {
+      // 第 1 次：分析请求 → 合法结果
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: MIRROR_SSE })
+      return
+    }
+    if (content.includes('专业的职场模拟场景设计师')) {
+      // 第 2 次：场景生成请求 → 合法七阶段场景
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: GENERATED_SCENARIO_SSE })
+      return
+    }
+    // 第 3 次起：进入 /chat 后的对话请求 → 固定 SSE 开场白
+    await route.fulfill({ status: 200, contentType: 'text/event-stream', body: CHAT_SSE })
+  })
+
+  await analyzeJd(page)
+  await expect(page.getByText(MIRROR_RESULT.summary)).toBeVisible()
+
+  // 点击"开始体验「运营专员」"（summary 不匹配内置岗位 → 走场景生成接口）
+  await page.getByRole('button', { name: /开始体验「运营专员」/ }).click()
+
+  // 进入 /chat，聊天页显示自定义岗位名与 Day 1
+  await expect(page).toHaveURL(/\/chat$/)
+  await expect(page.getByText('数据分析师的一天 · Day 1')).toBeVisible()
+
+  // Day 1 第一个阶段已开始：系统消息（⏰ 时间 — 阶段标题）+ AI 开场白
+  await expect(page.getByText('⏰ 09:00 — 数据需求', { exact: true })).toBeVisible()
+  await expect(page.getByText('好的，收到！').first()).toBeVisible()
+
+  // 恰好 3 次请求：分析 + 场景生成 + 聊天开场白
+  expect(requestCount).toBe(3)
 })
