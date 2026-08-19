@@ -102,28 +102,34 @@ export function JobSelectionPage() {
           <p>每个岗位都是一段沉浸式的工作日模拟，完成后你将获得专属能力评估报告</p>
         </motion.div>
         <div className="job-grid">
-          {filteredJobs.map((job, i) => (
-            <motion.div
-              key={job.id}
-              className="job-card"
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: i * 0.1 }}
-              onClick={() => handleSelect(job)}
-              style={{ '--accent': job.color } as React.CSSProperties}
-            >
-              <span className="job-icon">{job.icon}</span>
-              <h3>{job.title}</h3>
-              <p className="job-subtitle">{job.subtitle}</p>
-              <p className="job-desc">{job.description}</p>
-              <div className="job-tags">
-                {job.tags.map((tag) => (
-                  <span key={tag} className="job-tag">{tag}</span>
-                ))}
-              </div>
-              <button className="job-start-btn">开始体验</button>
-            </motion.div>
-          ))}
+          {filteredJobs.length > 0 ? (
+            filteredJobs.map((job, i) => (
+              <motion.div
+                key={job.id}
+                className="job-card"
+                initial={{ opacity: 0, y: 30 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: i * 0.1 }}
+                onClick={() => handleSelect(job)}
+                style={{ '--accent': job.color } as React.CSSProperties}
+              >
+                <span className="job-icon">{job.icon}</span>
+                <h3>{job.title}</h3>
+                <p className="job-subtitle">{job.subtitle}</p>
+                <p className="job-desc">{job.description}</p>
+                <div className="job-tags">
+                  {job.tags.map((tag) => (
+                    <span key={tag} className="job-tag">{tag}</span>
+                  ))}
+                </div>
+                <button className="job-start-btn">开始体验</button>
+              </motion.div>
+            ))
+          ) : (
+            <div className="empty-jobs">
+              没有找到相关岗位，试试搜索其他关键词，或使用岗位真相镜。
+            </div>
+          )}
         </div>
       </div>
     </div>

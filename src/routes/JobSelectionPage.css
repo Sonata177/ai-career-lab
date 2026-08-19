@@ -290,6 +290,19 @@
   transform: translateY(-1px);
 }
 
+/* Empty state - no matching jobs */
+.empty-jobs {
+  grid-column: 1 / -1;
+  padding: 64px 32px;
+  text-align: center;
+  background: var(--color-white);
+  border: 1px dashed var(--color-gray-300);
+  border-radius: var(--border-radius);
+  color: var(--color-gray-500);
+  font-size: 15px;
+  line-height: 1.8;
+}
+
 
 @media (max-width: 768px) {
   .top-actions {
