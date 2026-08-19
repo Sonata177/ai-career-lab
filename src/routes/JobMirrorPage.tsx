@@ -7,18 +7,9 @@ import { useChatStore } from '../store/chatStore'
 import { getScenario } from '../data/scenarios'
 import { jobs } from '../data/jobs'
 import { buildScenarioGenerationPrompt } from '../prompts/scenarioPrompt'
+import { isMirrorResult, type MirrorResult } from '../utils/mirrorValidation'
 import type { ScenarioConfig } from '../types/job'
 import './JobMirrorPage.css'
-
-interface MirrorResult {
-  responsibilities: string[]
-  skills: string[]
-  suitable: string[]
-  unsuitable: string[]
-  risks: string[]
-  summary: string
-  jobTitle: string
-}
 
 const MIRROR_PROMPT = `你是一个资深的职业分析师。请对以下岗位描述（JD）进行深度解析，帮助求职者真正理解这个岗位。
 
@@ -52,11 +43,13 @@ export function JobMirrorPage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [result, setResult] = useState<MirrorResult | null>(null)
   const [genError, setGenError] = useState('')
+  const [analyzeError, setAnalyzeError] = useState('')
 
   const handleAnalyze = async () => {
     if (!jdText.trim() || isAnalyzing) return
     setIsAnalyzing(true)
     setResult(null)
+    setAnalyzeError('') // 每次开始分析时清空错误
     let content = ''
 
     await streamChatCompletion({
@@ -65,11 +58,20 @@ export function JobMirrorPage() {
       onDone: () => {
         try {
           const jsonMatch = content.match(/\{[\s\S]*\}/)
-          if (jsonMatch) setResult(JSON.parse(jsonMatch[0]))
-        } catch (e) { console.error('Parse error:', e) }
+          if (!jsonMatch) throw new Error('no json') // 没有 JSON 也要主动抛错，不能静默结束
+          const parsed: unknown = JSON.parse(jsonMatch[0])
+          if (!isMirrorResult(parsed)) throw new Error('invalid mirror result structure') // 先校验结构，再 setResult
+          setResult(parsed)
+        } catch (e) {
+          console.error('Parse error:', e)
+          setAnalyzeError('分析结果格式异常，请重试')
+        }
         setIsAnalyzing(false)
       },
-      onError: () => setIsAnalyzing(false),
+      onError: () => {
+        setAnalyzeError('网络异常，请稍后重试')
+        setIsAnalyzing(false)
+      },
     })
   }
 
@@ -230,6 +232,9 @@ export function JobMirrorPage() {
               </button>
             )}
           </div>
+          {analyzeError && (
+            <div className="mirror-gen-error">{analyzeError}</div>
+          )}
           {genError && (
             <div className="mirror-gen-error">{genError}</div>
           )}

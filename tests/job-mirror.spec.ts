@@ -91,3 +91,91 @@ test('JD 为空：分析按钮禁用、不发 API 请求、显示输入提示', 
   await analyzeBtn.click({ force: true })
   expect(apiRequestCount).toBe(0)
 })
+
+test('分析请求返回 500：显示网络错误提示，加载结束、按钮恢复可用', async ({ page }) => {
+  test.setTimeout(60000)
+
+  await page.route('**/api/chat/completions', async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'AI service error' }),
+    })
+  })
+
+  await page.goto('/mirror')
+  await page.getByPlaceholder(/在这里粘贴完整的岗位描述/).fill(
+    '岗位职责：负责公司产品的日常运营。任职要求：本科及以上学历。'
+  )
+  const analyzeBtn = page.getByRole('button', { name: /开始解析岗位/ })
+  await analyzeBtn.click()
+
+  // 网络错误提示可见
+  await expect(page.getByText('网络异常，请稍后重试')).toBeVisible()
+
+  // 加载状态结束：按钮恢复为"开始解析岗位"且可用
+  await expect(analyzeBtn).toBeEnabled()
+  await expect(page.getByText('正在解析...')).toBeHidden()
+})
+
+test('分析返回 200 + 非法 JSON：显示格式错误提示，加载结束、按钮恢复可用', async ({ page }) => {
+  test.setTimeout(60000)
+
+  // 非法内容：HTTP 200 + 纯文本（无 JSON 对象）
+  const INVALID_SSE = [
+    'data: {"choices":[{"delta":{"content":"抱歉，我无法分析这个岗位。"}}]}\n\n',
+    'data: [DONE]\n\n',
+  ].join('')
+  await page.route('**/api/chat/completions', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: INVALID_SSE,
+    })
+  })
+
+  await page.goto('/mirror')
+  await page.getByPlaceholder(/在这里粘贴完整的岗位描述/).fill(
+    '岗位职责：负责公司产品的日常运营。任职要求：本科及以上学历。'
+  )
+  const analyzeBtn = page.getByRole('button', { name: /开始解析岗位/ })
+  await analyzeBtn.click()
+
+  // 格式错误提示可见
+  await expect(page.getByText('分析结果格式异常，请重试')).toBeVisible()
+
+  // 加载状态结束：按钮恢复为"开始解析岗位"且可用
+  await expect(analyzeBtn).toBeEnabled()
+  await expect(page.getByText('正在解析...')).toBeHidden()
+})
+
+test('分析返回 200 + 合法 JSON 但字段缺失（{}）：显示格式错误提示，页面不崩溃', async ({ page }) => {
+  test.setTimeout(60000)
+
+  // {} 是合法 JSON，但缺少 jobTitle/summary 及五个列表字段 → 结构校验失败
+  const EMPTY_OBJECT_SSE = 'data: ' + JSON.stringify({
+    choices: [{ delta: { content: '{}' } }],
+  }) + '\n\ndata: [DONE]\n\n'
+  await page.route('**/api/chat/completions', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: EMPTY_OBJECT_SSE,
+    })
+  })
+
+  await page.goto('/mirror')
+  await page.getByPlaceholder(/在这里粘贴完整的岗位描述/).fill(
+    '岗位职责：负责公司产品的日常运营。任职要求：本科及以上学历。'
+  )
+  const analyzeBtn = page.getByRole('button', { name: /开始解析岗位/ })
+  await analyzeBtn.click()
+
+  // 格式错误提示可见（结构校验失败，而非 JSON 解析失败）
+  await expect(page.getByText('分析结果格式异常，请重试')).toBeVisible()
+
+  // 页面不崩溃：结果区块不渲染、按钮恢复可用
+  await expect(page.locator('.mirror-results')).toBeHidden()
+  await expect(analyzeBtn).toBeEnabled()
+  await expect(page.getByText('正在解析...')).toBeHidden()
+})
