@@ -134,6 +134,37 @@ export const GENERATED_SCENARIO = {
 /** 场景生成接口返回（合法七阶段配置） */
 export const GENERATED_SCENARIO_SSE = mirrorSse(GENERATED_SCENARIO)
 
+// ================= 评估结果（结果页/导航测试用） =================
+
+/** 七个维度（名称与前端校验白名单一致） */
+export const ASSESSMENT_DIMENSIONS = [
+  { name: '沟通表达', score: 85 },
+  { name: '问题拆解', score: 72 },
+  { name: '执行落地', score: 90 },
+  { name: '用户同理心', score: 78 },
+  { name: '数据敏感度', score: 65 },
+  { name: '优先级判断', score: 80 },
+  { name: '协作与求助', score: 75 },
+]
+
+/** 合法评估结果（overallScore 78 < 80，不会触发结果页"继续体验 Day 2"） */
+export const ASSESSMENT_RESULT = {
+  overallScore: 78,
+  jobFitPercentage: 82,
+  dimensions: ASSESSMENT_DIMENSIONS.map((d) => ({
+    ...d,
+    evidence: '模拟评估证据。',
+    color: '#3b82f6',
+  })),
+  strengths: ['结构化表达能力强'],
+  improvements: ['数据准备不足'],
+  suggestions: ['建立数据复盘习惯'],
+  fitAdvice: '整体适配度较高。',
+}
+
+/** 评估接口返回（合法七维 JSON） */
+export const ASSESSMENT_SSE = mirrorSse(ASSESSMENT_RESULT)
+
 /** 在已打开的 /mirror 页面填写 JD 并点击分析，返回分析按钮定位器 */
 export async function fillJdAndAnalyze(page: Page, jdText: string = DEFAULT_JD_TEXT) {
   const analyzeBtn = page.getByRole('button', { name: /开始解析岗位/ })
