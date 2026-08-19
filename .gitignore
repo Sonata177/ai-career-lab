@@ -27,3 +27,8 @@ server/.env
 *.pyc
 __pycache__/
 experiments/evaluation/data/*.json
+
+# Playwright test artifacts
+test-results/
+playwright-report/
+blob-report/
