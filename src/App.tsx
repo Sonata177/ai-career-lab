@@ -7,6 +7,7 @@ import { ResultsPage } from './routes/ResultsPage'
 import { DayCompletePage } from './routes/DayCompletePage'
 import { HistoryPage } from './routes/HistoryPage'
 import { HistoryDetailPage } from './routes/HistoryDetailPage'
+import { HistoryComparePage } from './routes/HistoryComparePage'
 import './App.css'
 
 function App() {
@@ -21,6 +22,7 @@ function App() {
           <Route path="/results" element={<ResultsPage />} />
           <Route path="/day-complete" element={<DayCompletePage />} />
           <Route path="/history" element={<HistoryPage />} />
+          <Route path="/history/compare" element={<HistoryComparePage />} />
           <Route path="/history/:id" element={<HistoryDetailPage />} />
         </Routes>
       </div>

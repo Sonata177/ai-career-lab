@@ -66,6 +66,36 @@
   padding: 24px 28px;
 }
 
+.history-checkbox {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  accent-color: var(--color-gray-900);
+  cursor: pointer;
+}
+
+.history-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.history-compare-btn {
+  background: var(--color-gray-900);
+  color: #fff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-right: 12px;
+}
+
+.history-compare-btn:disabled {
+  background: var(--color-gray-200);
+  color: var(--color-gray-400);
+  cursor: not-allowed;
+}
+
 .history-card-info {
   flex: 1;
 }
