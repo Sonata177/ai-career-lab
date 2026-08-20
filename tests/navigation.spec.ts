@@ -115,3 +115,26 @@ test('结果页"导出评估报告"：触发下载，文件名与内容正确', 
   expect(content.result.overallScore).toBe(78)
   expect(content.result.dimensions).toHaveLength(7)
 })
+
+test('刷新结果页：评分、岗位名称与"继续体验 Day 2"均保留（sessionStorage 持久化）', async ({ page }) => {
+  test.setTimeout(60000)
+  // Day 1 高分报告（88 >= 80，刷新后继续按钮应仍在）
+  await mockApi(page, mirrorSse({ ...ASSESSMENT_RESULT, overallScore: 88 }))
+
+  await reachDay1Complete(page)
+  await page.getByRole('button', { name: '生成评估报告' }).click()
+  await expect(page).toHaveURL(/\/results$/, { timeout: 15000 })
+  await expect(page.locator('.score-number')).toHaveText('88')
+
+  // 刷新：三个持久化字段都应恢复
+  await page.reload()
+
+  // result 已恢复：评分仍在
+  await expect(page.locator('.score-number')).toHaveText('88')
+
+  // selectedJob 已恢复：报告页岗位名称仍在
+  await expect(page.getByText('运营实习生的一天 能力评估结果')).toBeVisible()
+
+  // currentDay 已恢复（=== 1）+ score >= 80 → "继续体验 Day 2"仍显示
+  await expect(page.getByRole('button', { name: '继续体验 Day 2' })).toBeVisible()
+})
