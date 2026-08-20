@@ -8,12 +8,28 @@ export function HistoryPage() {
   const records = useHistoryStore((s) => s.records)
   const clear = useHistoryStore((s) => s.clear)
   const [confirmingClear, setConfirmingClear] = useState(false)
+  // 对比选择：最多两条
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id)
+      if (prev.length >= 2) return prev // 最多选择两条
+      return [...prev, id]
+    })
+  }
+
+  const handleCompare = () => {
+    if (selectedIds.length !== 2) return
+    navigate(`/history/compare?ids=${encodeURIComponent(selectedIds.join(','))}`)
+  }
 
   // 两步确认：第一次点击进入确认态，确认后真正清空
   const handleClearClick = () => {
     if (confirmingClear) {
       clear()
       setConfirmingClear(false)
+      setSelectedIds([]) // 清空历史后，选择状态自动清除
     } else {
       setConfirmingClear(true)
     }
@@ -46,6 +62,14 @@ export function HistoryPage() {
           <div className="history-list">
             {records.map((record) => (
               <div key={record.id} className="history-card">
+                <input
+                  type="checkbox"
+                  className="history-checkbox"
+                  checked={selectedIds.includes(record.id)}
+                  disabled={!selectedIds.includes(record.id) && selectedIds.length >= 2}
+                  onChange={() => toggleSelect(record.id)}
+                  aria-label={`选择 ${record.jobTitle}`}
+                />
                 <div className="history-card-info">
                   <h3 className="history-card-title">{record.jobTitle}</h3>
                   <span className="history-card-date">
@@ -72,6 +96,13 @@ export function HistoryPage() {
             ))}
           </div>
           <div className="history-actions">
+            <button
+              className="btn history-compare-btn"
+              onClick={handleCompare}
+              disabled={selectedIds.length !== 2}
+            >
+              对比报告
+            </button>
             {confirmingClear ? (
               <div className="history-confirm">
                 <span className="history-confirm-text">

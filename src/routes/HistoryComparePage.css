@@ -1,0 +1,218 @@
+.history-compare-page {
+  min-height: 100vh;
+  background: var(--color-gray-50);
+  padding: 48px 24px;
+}
+
+.history-compare-header {
+  max-width: 960px;
+  margin: 0 auto 24px;
+}
+
+.history-back-btn {
+  background: transparent;
+  border: 1px solid var(--color-gray-300);
+  color: var(--color-gray-600);
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-bottom: 16px;
+  transition: var(--transition);
+}
+
+.history-back-btn:hover {
+  border-color: var(--color-gray-900);
+  color: var(--color-gray-900);
+}
+
+.history-compare-header h1 {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-gray-900);
+}
+
+.history-compare-header p {
+  color: var(--color-gray-500);
+  margin-top: 8px;
+}
+
+/* Two cards + VS */
+.compare-cards {
+  max-width: 960px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.compare-card {
+  flex: 1;
+  background: var(--color-white);
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--border-radius);
+  padding: 24px;
+}
+
+.compare-card h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-gray-900);
+}
+
+.compare-card-date {
+  display: block;
+  font-size: 13px;
+  color: var(--color-gray-400);
+  margin-top: 4px;
+}
+
+.compare-card-scores {
+  display: flex;
+  gap: 24px;
+  margin-top: 16px;
+}
+
+.compare-score-value {
+  display: block;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--color-gray-900);
+}
+
+.compare-score-label {
+  font-size: 12px;
+  color: var(--color-gray-500);
+}
+
+.compare-vs {
+  align-self: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--color-gray-400);
+}
+
+/* Overall diffs */
+.compare-overall {
+  max-width: 960px;
+  margin: 0 auto 16px;
+  background: var(--color-white);
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--border-radius);
+  padding: 16px 24px;
+  display: flex;
+  gap: 32px;
+  font-size: 15px;
+  color: var(--color-gray-700);
+}
+
+/* Dimension table */
+.compare-dim-table-wrap {
+  max-width: 960px;
+  margin: 0 auto;
+  background: var(--color-white);
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--border-radius);
+  padding: 24px;
+  overflow-x: auto;
+}
+
+.compare-dim-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.compare-dim-table th,
+.compare-dim-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-gray-100);
+  font-size: 14px;
+  color: var(--color-gray-700);
+}
+
+.compare-dim-table th {
+  font-weight: 600;
+  color: var(--color-gray-500);
+}
+
+.compare-up {
+  color: #16a34a;
+}
+
+.compare-down {
+  color: #e11d48;
+}
+
+.compare-same {
+  color: var(--color-gray-400);
+}
+
+.compare-trend {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.compare-trend-up {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.compare-trend-down {
+  background: #ffe4e6;
+  color: #e11d48;
+}
+
+.compare-trend-same {
+  background: var(--color-gray-100);
+  color: var(--color-gray-500);
+}
+
+/* Missing state */
+.history-compare-missing {
+  max-width: 480px;
+  margin: 80px auto;
+  background: var(--color-white);
+  border: 1px dashed var(--color-gray-300);
+  border-radius: var(--border-radius);
+  padding: 64px 32px;
+  text-align: center;
+}
+
+.history-compare-missing-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.history-compare-missing h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-gray-900);
+  margin-bottom: 8px;
+}
+
+.history-compare-missing p {
+  color: var(--color-gray-500);
+  margin-bottom: 24px;
+}
+
+@media (max-width: 768px) {
+  .history-compare-page {
+    padding: 24px 16px;
+  }
+  .history-compare-header h1 {
+    font-size: 24px;
+  }
+  .compare-cards {
+    flex-direction: column;
+  }
+  .compare-vs {
+    align-self: center;
+  }
+  .compare-overall {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
