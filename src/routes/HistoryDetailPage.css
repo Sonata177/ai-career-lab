@@ -1,0 +1,194 @@
+.history-detail-page {
+  min-height: 100vh;
+  background: var(--color-gray-50);
+  padding: 48px 24px;
+}
+
+.history-detail-header {
+  max-width: 960px;
+  margin: 0 auto 24px;
+}
+
+.history-back-btn {
+  background: transparent;
+  border: 1px solid var(--color-gray-300);
+  color: var(--color-gray-600);
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-bottom: 16px;
+  transition: var(--transition);
+}
+
+.history-back-btn:hover {
+  border-color: var(--color-gray-900);
+  color: var(--color-gray-900);
+}
+
+.history-detail-header h1 {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-gray-900);
+}
+
+.history-detail-date {
+  color: var(--color-gray-500);
+  margin-top: 8px;
+}
+
+/* Scores */
+.history-detail-scores {
+  max-width: 960px;
+  margin: 0 auto 24px;
+  display: flex;
+  gap: 24px;
+  background: var(--color-white);
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--border-radius);
+  padding: 24px 28px;
+}
+
+.history-score {
+  text-align: center;
+  min-width: 96px;
+}
+
+.history-score-value {
+  display: block;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--color-gray-900);
+}
+
+.history-score-label {
+  font-size: 12px;
+  color: var(--color-gray-500);
+}
+
+/* Sections */
+.history-detail-section {
+  max-width: 960px;
+  margin: 0 auto 16px;
+  background: var(--color-white);
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--border-radius);
+  padding: 24px 28px;
+}
+
+.history-detail-section h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-gray-900);
+  margin-bottom: 16px;
+}
+
+/* Dimension bars */
+.history-dim-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.history-dim-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.history-dim-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-dim-name {
+  width: 96px;
+  flex-shrink: 0;
+  font-size: 14px;
+  color: var(--color-gray-700);
+}
+
+.history-dim-bar-bg {
+  flex: 1;
+  height: 8px;
+  background: var(--color-gray-100);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.history-dim-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+
+.history-dim-score {
+  width: 32px;
+  text-align: right;
+  font-weight: 600;
+  color: var(--color-gray-900);
+}
+
+.history-dim-evidence {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-gray-500);
+  padding-left: 108px; /* 与维度名对齐 */
+}
+
+.history-detail-list {
+  padding-left: 20px;
+  color: var(--color-gray-700);
+  line-height: 1.8;
+}
+
+.history-detail-fit {
+  color: var(--color-gray-700);
+  line-height: 1.8;
+}
+
+/* Missing record */
+.history-detail-missing {
+  max-width: 480px;
+  margin: 80px auto;
+  background: var(--color-white);
+  border: 1px dashed var(--color-gray-300);
+  border-radius: var(--border-radius);
+  padding: 64px 32px;
+  text-align: center;
+}
+
+.history-detail-missing-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.history-detail-missing h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-gray-900);
+  margin-bottom: 8px;
+}
+
+.history-detail-missing p {
+  color: var(--color-gray-500);
+  margin-bottom: 24px;
+}
+
+@media (max-width: 768px) {
+  .history-detail-page {
+    padding: 24px 16px;
+  }
+  .history-detail-header h1 {
+    font-size: 24px;
+  }
+  .history-detail-scores {
+    padding: 20px;
+    justify-content: space-around;
+  }
+  .history-dim-name {
+    width: 80px;
+    font-size: 13px;
+  }
+}

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import './Navbar.css'
 
 export function Navbar() {
@@ -30,6 +31,7 @@ export function Navbar() {
           <li><a href="#experience" onClick={() => setMenuOpen(false)}>沉浸体验</a></li>
           <li><a href="#assessment" onClick={() => setMenuOpen(false)}>能力评估</a></li>
           <li><a href="#growth" onClick={() => setMenuOpen(false)}>成长建议</a></li>
+          <li><Link to="/history" onClick={() => setMenuOpen(false)}>历史记录</Link></li>
         </ul>
       </div>
     </nav>
