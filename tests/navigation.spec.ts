@@ -138,3 +138,31 @@ test('刷新结果页：评分、岗位名称与"继续体验 Day 2"均保留（
   // currentDay 已恢复（=== 1）+ score >= 80 → "继续体验 Day 2"仍显示
   await expect(page.getByRole('button', { name: '继续体验 Day 2' })).toBeVisible()
 })
+
+test('完成评估后写入历史记录（localStorage 持久化）', async ({ page }) => {
+  test.setTimeout(60000)
+  await mockApi(page)
+
+  await reachDay1Complete(page)
+  await page.getByRole('button', { name: '生成评估报告' }).click()
+  await expect(page).toHaveURL(/\/results$/, { timeout: 15000 })
+
+  // 历史记录已写入 localStorage（zustand persist 格式：{ state, version }）
+  const stored = await page.evaluate(() =>
+    localStorage.getItem('assessment-history-store')
+  )
+  expect(stored).toBeTruthy()
+  const { state } = JSON.parse(stored as string)
+  expect(state.records).toHaveLength(1)
+
+  const record = state.records[0]
+  expect(record.id).toBeTruthy()
+  expect(record.jobTitle).toBe('运营实习生的一天')
+  expect(Number.isNaN(Date.parse(record.completedAt))).toBe(false)
+  expect(record.overallScore).toBe(78)
+  expect(record.jobFitPercentage).toBe(82)
+  // 七维评分统一从 result.dimensions 读取，顶层不重复存储
+  expect(record.dimensions).toBeUndefined()
+  expect(record.result.dimensions).toHaveLength(7)
+  expect(record.result.overallScore).toBe(78)
+})

@@ -9,6 +9,8 @@ import { buildAssessmentPrompt } from '../prompts/assessmentPrompt'
 import { streamChatCompletion, formatMessagesForAPI } from '../services/deepseek'
 import { parseAssessmentResult } from '../utils/assessmentParsing'
 import { runAssessmentWithRetry } from '../utils/assessmentRetry'
+import { buildAssessmentRecord } from '../utils/assessmentHistory'
+import { useHistoryStore } from '../store/historyStore'
 import { MessageBubble } from '../components/chat/MessageBubble'
 import { ChatInput } from '../components/chat/ChatInput'
 import { TimelineBar } from '../components/chat/TimelineBar'
@@ -101,6 +103,8 @@ export function ChatPage() {
   // 场景配置在挂载时固定一次（原为 useRef，渲染期读取 ref 会被 react-hooks/refs 规则拦截）
   const [scenario] = useState(() => storeScenario || (selectedJob ? getScenario(selectedJob.id) : null))
   const initRef = useRef(false)
+  // StrictMode 下 effect 挂载会双调用，用 ref 保证 generateNow 只触发一次评估
+  const generateNowHandledRef = useRef(false)
   // 当前场景的阶段数组：逻辑侧仍用 ref（事件/effect 中读写），渲染侧用 state
   const [activePhases, setActivePhases] = useState<ScenarioPhase[]>([])
   const activePhasesRef = useRef<ScenarioPhase[]>([])
@@ -350,6 +354,13 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
     if (parsed) {
       setResult(parsed)
       setGenerating(false)
+      // 评估历史：仅合法结果入库（兜底报告不计入）；用 getState 避免引入订阅依赖
+      useHistoryStore.getState().addRecord(
+        buildAssessmentRecord({
+          jobTitle: useJobStore.getState().selectedJob?.title || '岗位体验',
+          result: parsed,
+        })
+      )
       setTimeout(() => navigate('/results'), 1500)
       return
     }
@@ -366,6 +377,9 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
 
     const generateNow = (location.state as { generateNow?: boolean } | null)?.generateNow
     if (generateNow) {
+      // StrictMode 双调用保护：避免重复触发评估（重复 API 调用 + 重复历史记录）
+      if (generateNowHandledRef.current) return
+      generateNowHandledRef.current = true
       generateAssessment()
       return
     }
