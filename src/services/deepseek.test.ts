@@ -130,7 +130,7 @@ describe('streamChatCompletion', () => {
   })
 
   describe('第五组：没有 [DONE] 但流自然结束', () => {
-    it('流正常结束（未发 [DONE]）时仍调用一次 onDone（固定现有行为）', async () => {
+    it('流结束但未收到 [DONE]：判定为异常，onError 收到"连接中断"', async () => {
       fetchMock.mockResolvedValue(createSseResponse([
         'data: {"choices":[{"delta":{"content":"好"}}]}\n\n',
       ]))
@@ -140,8 +140,94 @@ describe('streamChatCompletion', () => {
 
       expect(options.onChunk).toHaveBeenCalledTimes(1)
       expect(options.onChunk).toHaveBeenCalledWith('好')
-      expect(options.onDone).toHaveBeenCalledTimes(1)
-      expect(options.onError).not.toHaveBeenCalled()
+      expect(options.onDone).not.toHaveBeenCalled()
+      expect(options.onError).toHaveBeenCalledTimes(1)
+      expect((options.onError.mock.calls[0][0] as Error).message).toBe('连接中断：未收到完成标记')
+    })
+  })
+
+  describe('第六组：无数据超时与外部取消', () => {
+    /** 模拟真实 fetch：挂起直到 signal 中止才 reject */
+    function hangingFetchMock() {
+      return vi.fn((_url: unknown, init?: RequestInit) => new Promise((_, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+        )
+      }))
+    }
+
+    it('超过 timeoutMs 无数据：onError 收到"AI 响应超时，请重试"', async () => {
+      vi.useFakeTimers()
+      try {
+        const fetchMock = hangingFetchMock()
+        vi.stubGlobal('fetch', fetchMock)
+
+        const options = makeOptions()
+        const promise = streamChatCompletion({ ...options, timeoutMs: 1000 })
+        await vi.advanceTimersByTimeAsync(1000)
+
+        await promise
+        expect(options.onError).toHaveBeenCalledTimes(1)
+        expect((options.onError.mock.calls[0][0] as Error).message).toBe('AI 响应超时，请重试')
+        expect(options.onDone).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('外部 signal 取消：onError 收到"请求已取消"', async () => {
+      const fetchMock = hangingFetchMock()
+      vi.stubGlobal('fetch', fetchMock)
+
+      const abortController = new AbortController()
+      const options = makeOptions()
+      const promise = streamChatCompletion({ ...options, signal: abortController.signal })
+      abortController.abort()
+
+      await promise
+      expect(options.onError).toHaveBeenCalledTimes(1)
+      expect((options.onError.mock.calls[0][0] as Error).message).toBe('请求已取消')
+      expect(options.onDone).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    })
+
+    it('持续收到 chunk 会重置超时计时器，不会误超时', async () => {
+      vi.useFakeTimers()
+      try {
+        // 600ms 与 1200ms 各来一个 chunk（timeoutMs=1000），1300ms 流结束（无 [DONE]）
+        const encoder = new TextEncoder()
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            setTimeout(() => controller.enqueue(encoder.encode(
+              'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'
+            )), 600)
+            setTimeout(() => controller.enqueue(encoder.encode(
+              'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+            )), 1200)
+            setTimeout(() => controller.close(), 1300)
+          },
+        })
+        const fetchMock = vi.fn().mockResolvedValue(new Response(stream, { status: 200 }))
+        vi.stubGlobal('fetch', fetchMock)
+
+        const options = makeOptions()
+        const promise = streamChatCompletion({ ...options, timeoutMs: 1000 })
+        // 推进到 1300：1200 的 chunk 若未被 1000 超时中止，说明计时器被 600 的 chunk 重置
+        await vi.advanceTimersByTimeAsync(1300)
+        await promise
+
+        expect(options.onChunk).toHaveBeenCalledTimes(2)
+        expect(options.onChunk).toHaveBeenNthCalledWith(1, '你')
+        expect(options.onChunk).toHaveBeenNthCalledWith(2, '好')
+        // 超时未触发（若触发会中止读流），而是流结束无 [DONE] → 连接中断
+        expect(options.onError).toHaveBeenCalledTimes(1)
+        expect((options.onError.mock.calls[0][0] as Error).message).toBe('连接中断：未收到完成标记')
+        expect(options.onDone).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+        vi.unstubAllGlobals()
+      }
     })
   })
 })

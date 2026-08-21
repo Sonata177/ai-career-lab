@@ -13,9 +13,11 @@ interface Props {
   background: string
   messages: ColleagueMessage[]
   onMessagesChange: (msgs: ColleagueMessage[]) => void
+  /** 获取卸载取消信号（离开页面时中止请求，避免浪费 Token；渲染期不读取） */
+  getAbortSignal?: () => AbortSignal | undefined
 }
 
-export function ColleagueDrawer({ open, onClose, phaseTitle, phaseDescription, background, messages, onMessagesChange }: Props) {
+export function ColleagueDrawer({ open, onClose, phaseTitle, phaseDescription, background, messages, onMessagesChange, getAbortSignal }: Props) {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -58,6 +60,7 @@ export function ColleagueDrawer({ open, onClose, phaseTitle, phaseDescription, b
 
     await streamChatCompletion({
       messages: apiMessages,
+      signal: getAbortSignal?.(),
       onChunk: (text) => {
         content += text
         if (!added) {

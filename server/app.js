@@ -10,9 +10,14 @@ import rateLimit from 'express-rate-limit'
  * @param {object} options
  * @param {string} options.apiKey    DeepSeek API 密钥（必填）
  * @param {typeof fetch} [options.fetchImpl] fetch 实现，默认使用全局 fetch
+ * @param {number} [options.upstreamTimeoutMs] 上游无响应超时（毫秒），默认 60s
  * @returns {import('express').Express}
  */
-export function createApp({ apiKey, fetchImpl = fetch }) {
+export function createApp({
+  apiKey,
+  fetchImpl = fetch,
+  upstreamTimeoutMs = 60_000,
+}) {
   if (!apiKey) {
     throw new Error('apiKey is required')
   }
@@ -74,6 +79,24 @@ export function createApp({ apiKey, fetchImpl = fetch }) {
     // 上游按 SSE 返回、本地却走 JSON 分支，response.json() 会解析失败）
     const effectiveStream = stream ?? true
 
+    // 上游请求控制：无响应超时 + 客户端断开时中止（避免继续消耗 Token）。
+    // 计时器在收到上游数据时重置（无数据超时语义），最后统一清理。
+    const controller = new AbortController()
+    let upstreamTimedOut = false
+    let upstreamTimeout = setTimeout(() => {
+      upstreamTimedOut = true
+      controller.abort()
+    }, upstreamTimeoutMs)
+    const resetUpstreamTimeout = () => {
+      clearTimeout(upstreamTimeout)
+      upstreamTimeout = setTimeout(() => {
+        upstreamTimedOut = true
+        controller.abort()
+      }, upstreamTimeoutMs)
+    }
+    const onClientClose = () => controller.abort()
+    res.on('close', onClientClose)
+
     try {
       const response = await fetchImpl('https://api.deepseek.com/chat/completions', {
         method: 'POST',
@@ -88,6 +111,7 @@ export function createApp({ apiKey, fetchImpl = fetch }) {
           temperature: Math.min(Math.max(temperature ?? 0.8, 0), 2),
           max_tokens: Math.min(max_tokens ?? 1024, 8192),
         }),
+        signal: controller.signal,
       })
 
       if (!response.ok) {
@@ -97,30 +121,63 @@ export function createApp({ apiKey, fetchImpl = fetch }) {
       }
 
       if (effectiveStream) {
-        res.setHeader('Content-Type', 'text/event-stream')
-        res.setHeader('Cache-Control', 'no-cache')
-        res.setHeader('Connection', 'keep-alive')
-        res.setHeader('X-Accel-Buffering', 'no')
-
         const reader = response.body.getReader()
+        let streamStarted = false
         try {
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
+            resetUpstreamTimeout() // 每次收到上游数据重置无响应计时器
+
+            // 只有拿到首个正文 chunk 后才发送 SSE 响应头：
+            // 首 chunk 前超时会抛到外层，返回 504，而不是空的 200 SSE。
+            if (!streamStarted) {
+              streamStarted = true
+              res.setHeader('Content-Type', 'text/event-stream')
+              res.setHeader('Cache-Control', 'no-cache')
+              res.setHeader('Connection', 'keep-alive')
+              res.setHeader('X-Accel-Buffering', 'no')
+            }
             res.write(value)
           }
         } catch (streamErr) {
-          console.error('Stream error:', streamErr.message)
+          if (!streamStarted) {
+            // 尚未向客户端发送任何响应头/数据，交由外层超时分支返回 504。
+            throw streamErr
+          }
+          // SSE 已开始：结束流，前端按未收到 [DONE] 判定为异常并进入重试流程。
+          // 超时/客户端断开触发的中止是预期路径；其余真实读流异常需要留日志。
+          if (!controller.signal.aborted) {
+            console.error('Stream read error:', streamErr.message)
+          }
+          if (!res.destroyed) {
+            res.end()
+          }
         } finally {
-          res.end()
+          if (streamStarted && !res.destroyed) {
+            res.end()
+          }
         }
       } else {
         const data = await response.json()
         res.json(data)
       }
     } catch (err) {
+      // 客户端已断开：不再写响应
+      if (res.destroyed || res.writableEnded) return
+      if (upstreamTimedOut) {
+        if (!res.headersSent) {
+          // 响应头未发送：返回 504
+          return res.status(504).json({ error: 'Upstream timeout' })
+        }
+        // 已开始 SSE：结束流（前端识别为异常）
+        return res.end()
+      }
       console.error('Proxy error:', err.message)
       res.status(500).json({ error: 'Internal server error' })
+    } finally {
+      clearTimeout(upstreamTimeout)
+      res.removeListener('close', onClientClose)
     }
   })
 

@@ -166,9 +166,11 @@ test('收到部分流式内容后刷新：仍可重试（replyRequest 判定，�
   await page.addInitScript(() => {
     const origFetch = window.fetch.bind(window)
     window.fetch = async (input, init) => {
-      const resp = await origFetch(input, init)
       const url = typeof input === 'string' ? input : input.url
-      if (!url.includes('/api/chat/completions')) return resp
+      // API 请求直接返回 Mock；非 API 请求才走真实 fetch（避免测试打到后端）
+      if (!url.includes('/api/chat/completions')) {
+        return origFetch(input, init)
+      }
       const bodyText = typeof init?.body === 'string' ? init.body : ''
       const postData = bodyText ? JSON.parse(bodyText) : null
       const hasUser = Array.isArray(postData?.messages)

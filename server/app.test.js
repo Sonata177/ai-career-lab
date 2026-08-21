@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import http from 'node:http'
 import request from 'supertest'
 import { createApp } from './app.js'
 
@@ -251,5 +252,140 @@ describe('上游接口异常', () => {
     const bodyText = JSON.stringify(res.body)
     expect(bodyText).not.toContain('fetch failed')
     expect(bodyText).not.toContain('connection refused')
+  })
+})
+
+describe('上游超时与客户端断开', () => {
+  /** 模拟真实 fetch：挂起直到 signal 中止才 reject */
+  function hangingFetchMock() {
+    return vi.fn((_url, init) => new Promise((_, reject) => {
+      init?.signal?.addEventListener('abort', () =>
+        reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+      )
+    }))
+  }
+
+  const VALID_BODY = { messages: [{ role: 'user', content: '你好' }], stream: false }
+
+  it('验收6：上游超时且响应头未发送：返回 504', async () => {
+    const fetchMock = hangingFetchMock()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock, upstreamTimeoutMs: 100 })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send(VALID_BODY)
+
+    expect(res.status).toBe(504)
+    expect(res.body).toEqual({ error: 'Upstream timeout' })
+  })
+
+  it('上游已返回 Response 但首个正文 chunk 不来：返回 504 而非空的 200 SSE', async () => {
+    const encoder = new TextEncoder()
+    const fetchMock = vi.fn((_url, init) => new Promise((resolve) => {
+      const stream = new ReadableStream({
+        start(c) {
+          // 不 enqueue 任何数据；signal 中止时让流报错（模拟浏览器行为）
+          init.signal.addEventListener('abort', () =>
+            c.error(new DOMException('Aborted', 'AbortError'))
+          )
+        },
+      })
+      resolve(new Response(stream, { status: 200 }))
+    }))
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock, upstreamTimeoutMs: 100 })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: '你好' }] })
+
+    // 首个 chunk 前超时：响应头尚未发送 → 504，而不是空 200 SSE
+    expect(res.status).toBe(504)
+    expect(res.body).toEqual({ error: 'Upstream timeout' })
+  })
+
+  it('SSE 已开始后上游停滞：超时后结束流且不发送 [DONE]（前端据此判定异常）', async () => {
+    const encoder = new TextEncoder()
+    // 模拟真实 fetch：上游响应流与 signal 挂钩（中止时流报错）
+    const fetchMock = vi.fn((_url, init) => new Promise((resolve) => {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"部分"}}]}\n\n'))
+          // 之后停滞；signal 中止时让流报错
+          init.signal.addEventListener('abort', () =>
+            c.error(new DOMException('Aborted', 'AbortError'))
+          )
+        },
+      })
+      resolve(new Response(stream, { status: 200 }))
+    }))
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock, upstreamTimeoutMs: 100 })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: '你好' }] })
+
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('text/event-stream')
+    expect(res.text).toContain('"content":"部分"')
+    expect(res.text).not.toContain('[DONE]')
+  })
+
+  it('SSE 持续收到上游 chunk 不误超时（计时器按 chunk 重置）', async () => {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(c) {
+        let i = 0
+        const id = setInterval(() => {
+          i++
+          c.enqueue(encoder.encode(`data: {"choices":[{"delta":{"content":"${i}"}}]}\n\n`))
+          if (i >= 6) {
+            clearInterval(id)
+            c.close()
+          }
+        }, 50)
+      },
+    })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(stream, { status: 200 }))
+    // 单 chunk 间隔 50ms，总时长 300ms；若计时器未重置，80ms 处就会被中止
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock, upstreamTimeoutMs: 80 })
+
+    const res = await request(app)
+      .post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: '你好' }] })
+
+    expect(res.status).toBe(200)
+    // 6 个 chunk 全部送达
+    expect(res.text).toContain('"content":"6"')
+  })
+
+  it('验收5：客户端断开连接：中止上游请求', async () => {
+    const fetchMock = hangingFetchMock()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: fetchMock, upstreamTimeoutMs: 10_000 })
+    const server = app.listen(0)
+    const port = server.address().port
+
+    try {
+      // 发起请求后立即销毁连接，模拟浏览器刷新/离开页面
+      const req = http.request({
+        port,
+        path: '/api/chat/completions',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      req.on('error', () => {}) // 销毁连接产生的 ECONNRESET 是预期行为，忽略
+      req.write(JSON.stringify(VALID_BODY))
+      req.end()
+      await new Promise((r) => setTimeout(r, 200))
+      req.destroy()
+
+      // 等待服务端感知断开并中止上游
+      await new Promise((r) => setTimeout(r, 300))
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [, init] = fetchMock.mock.calls[0]
+      expect(init.signal.aborted).toBe(true)
+    } finally {
+      server.close()
+    }
   })
 })
