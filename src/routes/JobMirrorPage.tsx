@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { streamChatCompletion } from '../services/deepseek'
 import { useJobStore } from '../store/jobStore'
 import { useChatStore } from '../store/chatStore'
@@ -37,6 +37,10 @@ const MIRROR_PROMPT = `你是一个资深的职业分析师。请对以下岗位
 
 export function JobMirrorPage() {
   const navigate = useNavigate()
+  // 从岗位选择页跳转而来（无内置场景的岗位）：带 jobTitle 提示用 JD 生成体验
+  const location = useLocation()
+  const fromJobSelection = (location.state as { fromJobSelection?: boolean } | null)?.fromJobSelection
+  const pendingJobTitle = (location.state as { jobTitle?: string } | null)?.jobTitle
   const { setSelectedJob, setScenarioConfig } = useJobStore()
   const setCurrentDay = useChatStore((s) => s.setCurrentDay)
   const [jdText, setJdText] = useState('')
@@ -184,6 +188,15 @@ export function JobMirrorPage() {
       </div>
 
       <div className="container">
+        {fromJobSelection && pendingJobTitle && (
+          <div className="mirror-jd-hint">
+            <span className="mirror-jd-hint-icon">💡</span>
+            <span>
+              「{pendingJobTitle}」暂无内置体验场景，粘贴该岗位的 JD
+              即可生成专属体验
+            </span>
+          </div>
+        )}
         <motion.div
           className="mirror-input-card"
           initial={{ opacity: 0, y: 20 }}
