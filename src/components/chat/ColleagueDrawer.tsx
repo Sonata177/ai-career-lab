@@ -1,12 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { streamChatCompletion } from '../../services/deepseek'
+import type { ColleagueMessage } from '../../types/chat'
 import './ColleagueDrawer.css'
 
-export interface ColleagueMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-}
+export type { ColleagueMessage }
 
 interface Props {
   open: boolean

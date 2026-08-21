@@ -1,12 +1,22 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import type { ChatMessage, TimelineStep } from '../types/chat'
+import type { ChatMessage, TimelineStep, ColleagueMessage } from '../types/chat'
+import type { ScenarioPhase } from '../types/job'
 
 interface ChatState {
   messages: ChatMessage[]
   currentPhaseIndex: number
   currentDay: number
   timeline: TimelineStep[]
+  activePhases: ScenarioPhase[]
+  /** 当前会话所属岗位 id（用于判断刷新后会话是否可恢复） */
+  sessionJobId: string | null
+  /** 任务选择器是否打开（持久化，刷新后恢复选择器状态） */
+  isSelectingTask: boolean
+  /** 是否正在等待 AI 回复（持久化；刷新后仍为 true 说明请求被中断） */
+  isAwaitingReply: boolean
+  /** 同事求助（小李）消息记录（进入评估 Prompt，需持久化） */
+  colleagueMessages: ColleagueMessage[]
   isLoading: boolean
   isComplete: boolean
   userMessageCount: number
@@ -15,6 +25,11 @@ interface ChatState {
   advancePhase: () => void
   setPhaseIndex: (index: number) => void
   setTimeline: (timeline: TimelineStep[]) => void
+  setActivePhases: (phases: ScenarioPhase[]) => void
+  setSessionJobId: (jobId: string) => void
+  setSelectingTask: (selecting: boolean) => void
+  setAwaitingReply: (awaiting: boolean) => void
+  setColleagueMessages: (msgs: ColleagueMessage[]) => void
   setComplete: () => void
   setCurrentDay: (day: number) => void
   incrementUserMessages: () => void
@@ -28,6 +43,11 @@ export const useChatStore = create<ChatState>()(
       currentPhaseIndex: 0,
       currentDay: 1,
       timeline: [],
+      activePhases: [],
+      sessionJobId: null,
+      isSelectingTask: false,
+      isAwaitingReply: false,
+      colleagueMessages: [],
       isLoading: false,
       isComplete: false,
       userMessageCount: 0,
@@ -61,6 +81,11 @@ export const useChatStore = create<ChatState>()(
           userMessageCount: 0,
         })),
       setTimeline: (timeline) => set({ timeline }),
+      setActivePhases: (phases) => set({ activePhases: phases }),
+      setSessionJobId: (jobId) => set({ sessionJobId: jobId }),
+      setSelectingTask: (selecting) => set({ isSelectingTask: selecting }),
+      setAwaitingReply: (awaiting) => set({ isAwaitingReply: awaiting }),
+      setColleagueMessages: (msgs) => set({ colleagueMessages: msgs }),
       setComplete: () => set({ isComplete: true }),
       setCurrentDay: (day) => set({ currentDay: day }),
       incrementUserMessages: () =>
@@ -70,6 +95,11 @@ export const useChatStore = create<ChatState>()(
           messages: [],
           currentPhaseIndex: 0,
           timeline: [],
+          activePhases: [],       // 清除会话阶段，避免换岗后复用旧岗位题目
+          sessionJobId: null,     // 清除会话归属，强制下次全新初始化
+          isSelectingTask: false,
+          isAwaitingReply: false,
+          colleagueMessages: [],
           isLoading: false,
           isComplete: false,
           userMessageCount: 0,
@@ -80,9 +110,21 @@ export const useChatStore = create<ChatState>()(
       version: 1,
       // sessionStorage：刷新保留、关闭标签页清除
       storage: createJSONStorage(() => sessionStorage),
-      // 只持久化 currentDay（报告页判断"继续体验 Day N"用）；
-      // 消息/时间轴/加载态等瞬时状态刷新后应恢复初始值
-      partialize: (state) => ({ currentDay: state.currentDay }),
+      // 持久化会话进度；isLoading 是瞬时状态（刷新后旧的 API 请求已不存在，
+      // 若恢复成 true 输入框会永久禁用），故不持久化
+      partialize: (state) => ({
+        messages: state.messages,
+        currentPhaseIndex: state.currentPhaseIndex,
+        currentDay: state.currentDay,
+        timeline: state.timeline,
+        isComplete: state.isComplete,
+        userMessageCount: state.userMessageCount,
+        activePhases: state.activePhases,
+        sessionJobId: state.sessionJobId,
+        isSelectingTask: state.isSelectingTask,
+        isAwaitingReply: state.isAwaitingReply,
+        colleagueMessages: state.colleagueMessages,
+      }),
     }
   )
 )

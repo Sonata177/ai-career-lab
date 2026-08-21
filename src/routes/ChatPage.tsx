@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useChatStore } from '../store/chatStore'
 import { useJobStore } from '../store/jobStore'
@@ -18,8 +18,8 @@ import { TypingIndicator } from '../components/chat/TypingIndicator'
 import { TaskSelector, type TaskOption } from '../components/chat/TaskSelector'
 import { RoleNotification } from '../components/chat/RoleNotification'
 import { IdleHint } from '../components/chat/IdleHint'
-import { ColleagueDrawer, type ColleagueMessage } from '../components/chat/ColleagueDrawer'
-import type { ChatMessage } from '../types/chat'
+import { ColleagueDrawer } from '../components/chat/ColleagueDrawer'
+import type { ChatMessage, TimelineStep } from '../types/chat'
 import type { ScenarioPhase } from '../types/job'
 import './ChatPage.css'
 
@@ -60,6 +60,42 @@ function buildUserMessage(text: string): ChatMessage {
   }
 }
 
+/** 构建某天的时间轴（阶段顺序即时间顺序） */
+function buildDayTimeline(dayPhases: ScenarioPhase[]): TimelineStep[] {
+  return dayPhases.map((p, i) => ({
+    time: p.time,
+    title: p.title,
+    status: i === 0 ? 'active' as const : 'pending' as const,
+  }))
+}
+
+/** 找到最后一条已启动阶段（⏰ 系统消息）对应的阶段索引；无则返回 -1 */
+function findLastStartedPhaseIndex(
+  messages: ChatMessage[],
+  phases: ScenarioPhase[]
+): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role !== 'system' || !msg.content.startsWith('⏰')) continue
+    return phases.findIndex((p) => msg.content === `⏰ ${p.time} — ${p.title}`)
+  }
+  return -1
+}
+
+/** 根据 ⏰ 系统消息重建"已启动阶段"集合（内容与 activePhases 的 time/title 精确匹配） */
+function rebuildStartedPhases(
+  messages: ChatMessage[],
+  phases: ScenarioPhase[]
+): Set<number> {
+  const started = new Set<number>()
+  for (const msg of messages) {
+    if (msg.role !== 'system' || !msg.content.startsWith('⏰')) continue
+    const idx = phases.findIndex((p) => msg.content === `⏰ ${p.time} — ${p.title}`)
+    if (idx >= 0) started.add(idx)
+  }
+  return started
+}
+
 /**
  * 单次评估请求：把回调式 streamChatCompletion 包装成 Promise。
  * 注意：result 必须在函数内部累积，否则第二次请求会拼接在第一次的错误内容后面。
@@ -83,20 +119,36 @@ export function ChatPage() {
   const location = useLocation()
   const selectedJob = useJobStore((s) => s.selectedJob)
   const {
-    messages, currentPhaseIndex, currentDay, timeline, isLoading, isComplete,
-    userMessageCount, addMessage, setLoading, setPhaseIndex,
-    setTimeline, setComplete, incrementUserMessages, reset,
+    messages, currentPhaseIndex, currentDay, timeline, activePhases,
+    isLoading, isComplete, isSelectingTask,
+    colleagueMessages, userMessageCount, addMessage,
+    setLoading, setPhaseIndex, setTimeline, setActivePhases, setSelectingTask,
+    setAwaitingReply, setColleagueMessages,
+    setComplete, incrementUserMessages, reset,
   } = useChatStore()
   const { setResult, setGenerating } = useAssessmentStore()
 
-  const [showTaskSelector, setShowTaskSelector] = useState(false)
-  const [pendingTasks, setPendingTasks] = useState<TaskOption[]>([])
   const [roleNotif, setRoleNotif] = useState({ visible: false, role: '', desc: '' })
   const [showIdleHint, setShowIdleHint] = useState(false)
   const [autoGenCount, setAutoGenCount] = useState(0)
   const [colleagueOpen, setColleagueOpen] = useState(false)
-  const [colleagueMessages, setColleagueMessages] = useState<ColleagueMessage[]>([])
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 任务选择器的候选项：由 当前天剩余阶段 推导（不重复存储，刷新后自动恢复）
+  const pendingTasks = useMemo<TaskOption[]>(() => {
+    if (!isSelectingTask) return []
+    const dayPhases = activePhases.filter((p) => p.day === currentDay)
+    if (dayPhases.length === 0) return []
+    const globalFirst = activePhases.indexOf(dayPhases[0])
+    const localIndex = currentPhaseIndex - globalFirst
+    return dayPhases.slice(localIndex + 1).map((p) => ({
+      id: p.id,
+      title: p.title,
+      description: p.description,
+      role: p.role,
+      icon: TASK_ICONS[p.id] || '📌',
+    }))
+  }, [isSelectingTask, activePhases, currentPhaseIndex, currentDay])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const storeScenario = useJobStore((s) => s.scenarioConfig)
@@ -105,8 +157,7 @@ export function ChatPage() {
   const initRef = useRef(false)
   // StrictMode 下 effect 挂载会双调用，用 ref 保证 generateNow 只触发一次评估
   const generateNowHandledRef = useRef(false)
-  // 当前场景的阶段数组：逻辑侧仍用 ref（事件/effect 中读写），渲染侧用 state
-  const [activePhases, setActivePhases] = useState<ScenarioPhase[]>([])
+  // 阶段数组在 store 中持久化（刷新恢复用）：逻辑侧用 ref 读写，渲染侧用 store 值
   const activePhasesRef = useRef<ScenarioPhase[]>([])
   const dayStartedRef = useRef(0)
   const startedPhasesRef = useRef<Set<number>>(new Set())
@@ -116,7 +167,7 @@ export function ChatPage() {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
-  useEffect(scrollToBottom, [messages, isLoading, showTaskSelector])
+  useEffect(scrollToBottom, [messages, isLoading, isSelectingTask])
 
   const resetIdleTimer = () => {
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
@@ -126,11 +177,11 @@ export function ChatPage() {
   }
 
   useEffect(() => {
-    if (!isLoading && !isComplete && !showTaskSelector && messages.length > 0) {
+    if (!isLoading && !isComplete && !isSelectingTask && messages.length > 0) {
       resetIdleTimer()
     }
     return () => { if (idleTimerRef.current) clearTimeout(idleTimerRef.current) }
-  }, [isLoading, isComplete, showTaskSelector, messages.length])
+  }, [isLoading, isComplete, isSelectingTask, messages.length])
 
   // PLACEHOLDER_FUNCTIONS
 
@@ -158,6 +209,7 @@ export function ChatPage() {
     ]
 
     setLoading(true)
+    setAwaitingReply(true) // 请求开始 → 等待回复中（刷新后据此判定中断）
     let content = ''
     const msgId = `ai-${Date.now()}`
     let added = false
@@ -180,14 +232,18 @@ export function ChatPage() {
           }))
         }
       },
-      onDone: () => setLoading(false),
+      onDone: () => {
+        setLoading(false)
+        setAwaitingReply(false) // 正常结束
+      },
       onError: (err) => {
         console.error('Chat error:', err)
         setLoading(false)
+        setAwaitingReply(false) // 报错结束
         addMessage({ id: `err-${Date.now()}`, role: 'system', content: '网络错误，请重试。', timestamp: Date.now() })
       },
     })
-  }, [scenario, addMessage, setLoading])
+  }, [scenario, addMessage, setLoading, setAwaitingReply])
 
   const startPhase = useCallback((phaseIndex: number) => {
     if (!activePhasesRef.current.length) return
@@ -234,17 +290,12 @@ export function ChatPage() {
       }
       return
     }
-    const tasks: TaskOption[] = remaining.map((p) => ({
-      id: p.id, title: p.title, description: p.description,
-      role: p.role, icon: TASK_ICONS[p.id] || '📌',
-    }))
-    setPendingTasks(tasks)
-    setShowTaskSelector(true)
+    // 候选项由 pendingTasks（推导）渲染，这里只需打开选择器
+    setSelectingTask(true)
   }
 
   const handleTaskSelect = (task: TaskOption) => {
-    setShowTaskSelector(false)
-    setPendingTasks([])
+    setSelectingTask(false)
     const idx = activePhasesRef.current.findIndex((p) => p.id === task.id)
     if (idx === -1) return
     setPhaseIndex(idx)
@@ -254,7 +305,7 @@ export function ChatPage() {
   }
 
   const handleSend = async (text: string) => {
-    if (!scenario || isComplete || showTaskSelector) return
+    if (!scenario || isComplete || isSelectingTask) return
     resetIdleTimer()
     const userMsg = buildUserMessage(text)
     addMessage(userMsg)
@@ -273,7 +324,7 @@ export function ChatPage() {
   }
 
   const handleAutoGenerate = async () => {
-    if (!scenario || isLoading || isComplete || showTaskSelector) return
+    if (!scenario || isLoading || isComplete || isSelectingTask) return
     setAutoGenCount((c) => c + 1)
     const phase = activePhasesRef.current[currentPhaseIndex]
     if (!phase) return
@@ -384,7 +435,12 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
       return
     }
 
-    if (initRef.current && activePhasesRef.current.length > 0) {
+    const chatState = useChatStore.getState()
+    const { messages: storedMessages, activePhases: storedPhases, sessionJobId: storedJobId } = chatState
+
+    if (initRef.current) {
+      // 本挂载内已初始化：仅处理跨天（组件保持挂载时 currentDay 变化）
+      if (activePhasesRef.current.length === 0) return
       if (dayStartedRef.current === currentDay) return
       dayStartedRef.current = currentDay
       startedPhasesRef.current.clear()
@@ -392,44 +448,66 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
       if (dayPhases.length > 0) {
         const firstPhaseOfDay = activePhasesRef.current.indexOf(dayPhases[0])
         setPhaseIndex(firstPhaseOfDay)
-        const tl = activePhasesRef.current
-          .filter((p) => p.day === currentDay)
-          .map((p, i) => ({
-            time: p.time,
-            title: p.title,
-            status: i === 0 ? 'active' as const : 'pending' as const,
-          }))
-        setTimeline(tl)
+        setTimeline(buildDayTimeline(dayPhases))
         showRoleNotification(dayPhases[0])
         startPhase(firstPhaseOfDay)
       }
       return
     }
 
-    if (initRef.current) return
     initRef.current = true
-    const day = useChatStore.getState().currentDay
-    dayStartedRef.current = day
+
+    // ---- 恢复路径：刷新后继续进行中的会话 ----
+    // 条件：存在消息与阶段数组、会话属于当前岗位、最后启动的阶段属于当前天
+    //（命中时不 reset、不重新随机化、不重发开场消息，直接沿用 store 中的数据）
+    const lastStartedIndex = findLastStartedPhaseIndex(storedMessages, storedPhases)
+    const isRestorable =
+      storedMessages.length > 0 &&
+      storedPhases.length > 0 &&
+      storedJobId === selectedJob.id &&
+      lastStartedIndex >= 0 &&
+      storedPhases[lastStartedIndex].day === currentDay
+
+    if (isRestorable) {
+      activePhasesRef.current = storedPhases
+      dayStartedRef.current = currentDay
+      startedPhasesRef.current = rebuildStartedPhases(storedMessages, storedPhases)
+      // 中断检测：基于持久化的 isAwaitingReply（不靠消息角色推测；
+      // 收到部分 chunk 时最后一条可能是 assistant，但仍算中断）
+      if (chatState.isAwaitingReply) {
+        addMessage({
+          id: `refresh-hint-${Date.now()}`,
+          role: 'system',
+          content: '上一请求因刷新中断，请重新发送。',
+          timestamp: Date.now(),
+        })
+        chatState.setAwaitingReply(false)
+      }
+      return
+    }
+
+    // ---- 全新开始或跨天：重置本天会话 ----
+    // 仅当是同一岗位的既有会话（跨天）才沿用已持久化的随机化结果；
+    // 换岗/重选岗位时 storedPhases 属于旧岗位，必须重新随机化
+    dayStartedRef.current = currentDay
     startedPhasesRef.current.clear()
     reset()
+    chatState.setSessionJobId(selectedJob.id)
 
-    const randomized = scenario.phases.map(randomizePhase)
-    activePhasesRef.current = randomized
-    setActivePhases(randomized)
+    const phases = (storedJobId === selectedJob.id && storedPhases.length > 0)
+      ? storedPhases
+      : scenario.phases.map(randomizePhase)
+    activePhasesRef.current = phases
+    setActivePhases(phases)
 
-    const dayPhases = randomized.filter((p) => p.day === day)
+    const dayPhases = phases.filter((p) => p.day === currentDay)
     if (dayPhases.length === 0) return
-    const firstPhaseOfDay = randomized.indexOf(dayPhases[0])
+    const firstPhaseOfDay = phases.indexOf(dayPhases[0])
     setPhaseIndex(firstPhaseOfDay)
-    const tl = dayPhases.map((p, i) => ({
-      time: p.time,
-      title: p.title,
-      status: i === 0 ? 'active' as const : 'pending' as const,
-    }))
-    setTimeline(tl)
+    setTimeline(buildDayTimeline(dayPhases))
     showRoleNotification(dayPhases[0])
     startPhase(firstPhaseOfDay)
-  }, [currentDay, generateAssessment, location.state, navigate, reset, scenario, selectedJob, setPhaseIndex, setTimeline, startPhase])
+  }, [addMessage, currentDay, generateAssessment, location.state, navigate, reset, scenario, selectedJob, setActivePhases, setPhaseIndex, setTimeline, startPhase])
 
   if (!scenario) return null
   const currentPhase = activePhases[currentPhaseIndex]
@@ -475,7 +553,7 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
           />
         ))}
         {isLoading && <TypingIndicator />}
-        {showTaskSelector && (
+        {isSelectingTask && (
           <TaskSelector tasks={pendingTasks} onSelect={handleTaskSelect} />
         )}
         <div ref={messagesEndRef} />
@@ -485,9 +563,9 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
           onSend={handleSend}
           onAutoGenerate={handleAutoGenerate}
           showQuickSend={autoGenCount >= 2}
-          disabled={isLoading || isComplete || showTaskSelector}
+          disabled={isLoading || isComplete || isSelectingTask}
         />
-        {!isComplete && !showTaskSelector && (
+        {!isComplete && !isSelectingTask && (
           <>
             <button
               className="colleague-btn"

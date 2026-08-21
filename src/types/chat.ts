@@ -13,3 +13,10 @@ export interface TimelineStep {
 }
 
 export type ChatPhase = 'intro' | 'task' | 'interaction' | 'wrap-up' | 'completed'
+
+/** 同事求助（小李）消息 */
+export interface ColleagueMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+}

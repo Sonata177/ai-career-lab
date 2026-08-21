@@ -25,6 +25,8 @@ export function JobSelectionPage() {
 
   const handleSelect = (job: typeof jobs[0]) => {
     setCurrentDay(1)
+    // 清除上一岗位的会话进度（消息/时间轴/阶段），避免新岗位复用旧会话
+    useChatStore.getState().reset()
     setSelectedJob(job)
     navigate('/chat')
   }
