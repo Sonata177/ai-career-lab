@@ -105,6 +105,34 @@
   border-top: none;
 }
 
+/* 回复失败重试条 */
+.reply-retry-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #fff7ed;
+  border-top: 1px solid #fed7aa;
+  font-size: 13px;
+  color: #9a3412;
+}
+
+.reply-retry-btn {
+  padding: 6px 14px;
+  background: var(--color-gray-900);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.reply-retry-btn:hover {
+  opacity: 0.9;
+}
+
 .skip-btn {
   padding: 10px 16px;
   margin-right: 16px;

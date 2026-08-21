@@ -122,7 +122,7 @@ test('任务选择器打开时刷新：选择器与候选项恢复，输入框�
   await expect(sendBtn(page)).toBeEnabled()
 })
 
-test('AI 回复期间刷新：显示"上一请求因刷新中断"提示，消息保留、输入框可用', async ({ page }) => {
+test('AI 回复期间刷新：出现"重新获取回复"按钮，消息保留、输入框可用', async ({ page }) => {
   test.setTimeout(60000)
   await page.route('**/api/chat/completions', async (route) => {
     const body = route.request().postDataJSON()
@@ -147,15 +147,20 @@ test('AI 回复期间刷新：显示"上一请求因刷新中断"提示，消息
   await page.waitForTimeout(500)
   await page.reload()
 
-  // 中断提示可见，用户消息保留，输入框恢复可用
-  await expect(page.getByText('上一请求因刷新中断，请重新发送。')).toBeVisible()
+  // 刷新中断 → 出现"重新获取回复"按钮；可重试状态下输入框禁用；用户消息保留
+  await expect(page.getByRole('button', { name: '重新获取回复' })).toBeVisible()
   await expect(page.getByText('这条消息可能没有回复', { exact: true })).toBeVisible()
-  await expect(sendBtn(page)).toBeEnabled()
+  await expect(sendBtn(page)).toBeDisabled()
   // 该消息没有收到 AI 回复（只有开场消息一条）
   await expect(page.getByText('好的，收到！')).toHaveCount(1)
+
+  // 点击重试 → 成功 → 输入框恢复可用
+  await page.getByRole('button', { name: '重新获取回复' }).click()
+  await expect(page.getByRole('button', { name: '重新获取回复' })).toBeHidden()
+  await expect(sendBtn(page)).toBeEnabled()
 })
 
-test('收到部分流式内容后刷新：仍显示中断提示（isAwaitingReply 判定，不靠消息角色）', async ({ page }) => {
+test('收到部分流式内容后刷新：仍可重试（replyRequest 判定，不靠消息角色）', async ({ page }) => {
   test.setTimeout(60000)
   // 拦截 fetch：开场请求返回正常 SSE；含用户消息的请求只发一个 chunk 且永不结束
   await page.addInitScript(() => {
@@ -198,11 +203,11 @@ test('收到部分流式内容后刷新：仍显示中断提示（isAwaitingRepl
   await page.waitForTimeout(300)
   await page.reload()
 
-  // isAwaitingReply 仍为 true → 中断提示可见（即使最后一条是 assistant）
-  await expect(page.getByText('上一请求因刷新中断，请重新发送。')).toBeVisible()
-  // 部分回复内容保留
+  // replyRequest 仍为 pending → 刷新后转为 retryable → 重试按钮出现（即使最后一条是 assistant）
+  await expect(page.getByRole('button', { name: '重新获取回复' })).toBeVisible()
+  // 部分回复内容保留；可重试状态下输入框禁用
   await expect(page.getByText('部分', { exact: true })).toBeVisible()
-  await expect(sendBtn(page)).toBeEnabled()
+  await expect(sendBtn(page)).toBeDisabled()
 })
 
 test('同事询问记录刷新后保留（进入评估 Prompt 的数据不丢失）', async ({ page }) => {

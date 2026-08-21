@@ -120,13 +120,18 @@ export function ChatPage() {
   const selectedJob = useJobStore((s) => s.selectedJob)
   const {
     messages, currentPhaseIndex, currentDay, timeline, activePhases,
-    isLoading, isComplete, isSelectingTask,
-    colleagueMessages, userMessageCount, addMessage,
+    isLoading, isComplete, isSelectingTask, replyRequest,
+    colleagueMessages, userMessageCount, addMessage, removeMessage,
     setLoading, setPhaseIndex, setTimeline, setActivePhases, setSelectingTask,
-    setAwaitingReply, setColleagueMessages,
+    setReplyRequest, setColleagueMessages,
     setComplete, incrementUserMessages, reset,
   } = useChatStore()
   const { setResult, setGenerating } = useAssessmentStore()
+
+  // 存在未解决的回复请求（pending 或 retryable）：
+  // 刷新后首次渲染可能是 pending + isLoading=false（effect 稍后才把 pending 改为 retryable），
+  // 这段时间必须同样禁止发送/跳过，否则会覆盖 replyRequest。
+  const hasUnresolvedReply = replyRequest !== null
 
   const [roleNotif, setRoleNotif] = useState({ visible: false, role: '', desc: '' })
   const [showIdleHint, setShowIdleHint] = useState(false)
@@ -189,19 +194,22 @@ export function ChatPage() {
     setRoleNotif({ visible: true, role: phase.role, desc: phase.roleDescription })
   }
 
-  const sendAIMessage = useCallback(async (phaseIndex: number, extraMessages: ChatMessage[]) => {
-    if (!scenario || !activePhasesRef.current.length) return
+  /**
+   * 发送阶段 AI 消息（该阶段的用户消息已在 store 中，无需 extraMessages，避免请求体重复）。
+   * 返回是否成功：失败时 replyRequest 进入 retryable，可由"重新获取回复"一键重试。
+   */
+  const sendAIMessage = useCallback(async (phaseIndex: number): Promise<boolean> => {
+    if (!scenario || !activePhasesRef.current.length) return false
     const phase = activePhasesRef.current[phaseIndex]
-    if (!phase) return
+    if (!phase) return false
     const systemPrompt = buildSystemPrompt(scenario, phase)
     const currentMessages = useChatStore.getState().messages
-    const allMessages = [...currentMessages, ...extraMessages]
 
     // Only send messages from the current phase (after the last system transition message)
-    const lastSysIndex = allMessages.map((m, i) => ({ m, i }))
+    const lastSysIndex = currentMessages.map((m, i) => ({ m, i }))
       .filter(({ m }) => m.role === 'system' && m.content.startsWith('⏰'))
       .pop()?.i ?? 0
-    const phaseMessages = allMessages.slice(lastSysIndex + 1)
+    const phaseMessages = currentMessages.slice(lastSysIndex + 1)
 
     const apiMessages = [
       { role: 'system', content: systemPrompt },
@@ -209,10 +217,11 @@ export function ChatPage() {
     ]
 
     setLoading(true)
-    setAwaitingReply(true) // 请求开始 → 等待回复中（刷新后据此判定中断）
+    setReplyRequest({ phaseIndex, assistantMessageId: null, status: 'pending' })
     let content = ''
     const msgId = `ai-${Date.now()}`
     let added = false
+    let succeeded = false
 
     await streamChatCompletion({
       messages: apiMessages,
@@ -224,6 +233,8 @@ export function ChatPage() {
             id: msgId, role: 'assistant', content,
             timestamp: Date.now(), scenarioRole: phase.role,
           })
+          // 记录已写入的 assistant 消息 id（重试前删除残缺消息）
+          setReplyRequest({ phaseIndex, assistantMessageId: msgId, status: 'pending' })
         } else {
           useChatStore.setState((state) => ({
             messages: state.messages.map((m) =>
@@ -233,17 +244,24 @@ export function ChatPage() {
         }
       },
       onDone: () => {
+        succeeded = true
         setLoading(false)
-        setAwaitingReply(false) // 正常结束
+        setReplyRequest(null) // 正常结束
       },
       onError: (err) => {
         console.error('Chat error:', err)
+        succeeded = false
         setLoading(false)
-        setAwaitingReply(false) // 报错结束
-        addMessage({ id: `err-${Date.now()}`, role: 'system', content: '网络错误，请重试。', timestamp: Date.now() })
+        // 报错 → 可重试（保留 assistantMessageId 供重试时删除残缺回复）
+        setReplyRequest({
+          phaseIndex,
+          assistantMessageId: added ? msgId : null,
+          status: 'retryable',
+        })
       },
     })
-  }, [scenario, addMessage, setLoading, setAwaitingReply])
+    return succeeded
+  }, [scenario, addMessage, setLoading, setReplyRequest])
 
   const startPhase = useCallback((phaseIndex: number) => {
     if (!activePhasesRef.current.length) return
@@ -257,7 +275,7 @@ export function ChatPage() {
       content: `⏰ ${phase.time} — ${phase.title}`,
       timestamp: Date.now(),
     })
-    sendAIMessage(phaseIndex, [])
+    sendAIMessage(phaseIndex)
   }, [addMessage, sendAIMessage])
 
   // PLACEHOLDER_HANDLERS
@@ -270,6 +288,7 @@ export function ChatPage() {
   }
 
   const handleSkipPhase = () => {
+    if (hasUnresolvedReply) return // 存在未解决的回复请求时不允许跳过（含刷新后的 pending 首帧）
     const phase = activePhasesRef.current[currentPhaseIndex]
     if (phase) {
       addMessage(buildSkipMessage(phase))
@@ -305,7 +324,7 @@ export function ChatPage() {
   }
 
   const handleSend = async (text: string) => {
-    if (!scenario || isComplete || isSelectingTask) return
+    if (!scenario || isComplete || isSelectingTask || hasUnresolvedReply) return
     resetIdleTimer()
     const userMsg = buildUserMessage(text)
     addMessage(userMsg)
@@ -315,16 +334,37 @@ export function ChatPage() {
     if (!phase) return
     const newCount = userMessageCount + 1
 
-    if (newCount >= phase.messageThreshold) {
-      await sendAIMessage(currentPhaseIndex, [userMsg])
+    // 只有 AI 回复成功才推进流程：失败时用户通过"重新获取回复"重试，
+    // 重试成功后若已达阈值再打开任务选择器（避免失败也提前推进）
+    const succeeded = await sendAIMessage(currentPhaseIndex)
+    if (succeeded && newCount >= phase.messageThreshold) {
       showNextTaskOptions()
-    } else {
-      await sendAIMessage(currentPhaseIndex, [userMsg])
+    }
+  }
+
+  /** 一键重试失败的 AI 回复：删除残缺消息 → 用原 phaseIndex 重新请求（不新增用户消息） */
+  const handleRetryReply = async () => {
+    const req = useChatStore.getState().replyRequest
+    if (!req || req.status !== 'retryable') return
+
+    // 删除残缺的 assistant 消息（若有）
+    if (req.assistantMessageId) {
+      removeMessage(req.assistantMessageId)
+    }
+
+    const succeeded = await sendAIMessage(req.phaseIndex)
+    if (succeeded) {
+      // 重试成功后，若当前用户消息数已达到该阶段阈值，再打开任务选择器
+      const phase = activePhasesRef.current[req.phaseIndex]
+      const count = useChatStore.getState().userMessageCount
+      if (phase && count >= phase.messageThreshold) {
+        showNextTaskOptions()
+      }
     }
   }
 
   const handleAutoGenerate = async () => {
-    if (!scenario || isLoading || isComplete || isSelectingTask) return
+    if (!scenario || isLoading || isComplete || isSelectingTask || hasUnresolvedReply) return
     setAutoGenCount((c) => c + 1)
     const phase = activePhasesRef.current[currentPhaseIndex]
     if (!phase) return
@@ -472,16 +512,10 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
       activePhasesRef.current = storedPhases
       dayStartedRef.current = currentDay
       startedPhasesRef.current = rebuildStartedPhases(storedMessages, storedPhases)
-      // 中断检测：基于持久化的 isAwaitingReply（不靠消息角色推测；
+      // 刷新中断检测：pending 的回复请求 → 标记为可重试（不靠消息角色推测；
       // 收到部分 chunk 时最后一条可能是 assistant，但仍算中断）
-      if (chatState.isAwaitingReply) {
-        addMessage({
-          id: `refresh-hint-${Date.now()}`,
-          role: 'system',
-          content: '上一请求因刷新中断，请重新发送。',
-          timestamp: Date.now(),
-        })
-        chatState.setAwaitingReply(false)
+      if (chatState.replyRequest?.status === 'pending') {
+        chatState.setReplyRequest({ ...chatState.replyRequest, status: 'retryable' })
       }
       return
     }
@@ -563,8 +597,16 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
           onSend={handleSend}
           onAutoGenerate={handleAutoGenerate}
           showQuickSend={autoGenCount >= 2}
-          disabled={isLoading || isComplete || isSelectingTask}
+          disabled={isLoading || isComplete || isSelectingTask || hasUnresolvedReply}
         />
+        {replyRequest?.status === 'retryable' && (
+          <div className="reply-retry-bar">
+            <span>回复获取失败，请重试</span>
+            <button className="reply-retry-btn" onClick={handleRetryReply}>
+              重新获取回复
+            </button>
+          </div>
+        )}
         {!isComplete && !isSelectingTask && (
           <>
             <button
@@ -577,7 +619,7 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
             <button
               className="skip-btn"
               onClick={handleSkipPhase}
-              disabled={isLoading}
+              disabled={isLoading || hasUnresolvedReply}
             >
               跳过本轮
             </button>
