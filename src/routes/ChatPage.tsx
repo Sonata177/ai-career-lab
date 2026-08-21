@@ -100,13 +100,14 @@ function rebuildStartedPhases(
  * 单次评估请求：把回调式 streamChatCompletion 包装成 Promise。
  * 注意：result 必须在函数内部累积，否则第二次请求会拼接在第一次的错误内容后面。
  */
-function requestAssessmentOnce(prompt: string): Promise<string> {
+function requestAssessmentOnce(prompt: string, signal?: AbortSignal): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let result = ''
     streamChatCompletion({
       messages: [{ role: 'user', content: prompt }],
       maxTokens: 4096,
       temperature: 0.2,
+      signal,
       onChunk: (text) => { result += text },
       onDone: () => resolve(result),
       onError: (err) => reject(err),
@@ -155,6 +156,31 @@ export function ChatPage() {
     }))
   }, [isSelectingTask, activePhases, currentPhaseIndex, currentDay])
 
+  // 组件卸载时中止进行中的回复请求（SPA 离开 /chat 时取消上游，避免浪费 Token）。
+  // StrictMode 兼容：幻影卸载的清理把 abort 延迟到宏任务，期间若已重挂载（新控制器接管）
+  // 则跳过——不会误杀新挂载期的请求（含开场请求）。
+  // 但请求可能使用幻影期创建的控制器（#1），因此真卸载时要中止"所有曾创建的控制器"。
+  const replyAbortRef = useRef<AbortController | null>(null)
+  const liveControllersRef = useRef<Set<AbortController>>(new Set())
+  useEffect(() => {
+    const controller = new AbortController()
+    replyAbortRef.current = controller
+    const liveControllers = liveControllersRef.current
+    liveControllers.add(controller)
+    return () => {
+      const current = replyAbortRef.current
+      setTimeout(() => {
+        if (replyAbortRef.current === current) {
+          // 真卸载：中止全部控制器（含 StrictMode 首挂载期被跳过的旧控制器）
+          for (const c of liveControllers) c.abort()
+          liveControllers.clear()
+          replyAbortRef.current = null
+        }
+        // 幻影卸载（期间已重挂载）：不动，等最终真卸载时统一中止
+      }, 0)
+    }
+  }, [])
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const storeScenario = useJobStore((s) => s.scenarioConfig)
   // 场景配置在挂载时固定一次（原为 useRef，渲染期读取 ref 会被 react-hooks/refs 规则拦截）
@@ -197,8 +223,12 @@ export function ChatPage() {
   /**
    * 发送阶段 AI 消息（该阶段的用户消息已在 store 中，无需 extraMessages，避免请求体重复）。
    * 返回是否成功：失败时 replyRequest 进入 retryable，可由"重新获取回复"一键重试。
+   * signal：卸载取消信号（开场/发送/重试均挂接；StrictMode 幻影卸载不会误杀，见 replyAbortRef 注释）。
    */
-  const sendAIMessage = useCallback(async (phaseIndex: number): Promise<boolean> => {
+  const sendAIMessage = useCallback(async (
+    phaseIndex: number,
+    signal?: AbortSignal
+  ): Promise<boolean> => {
     if (!scenario || !activePhasesRef.current.length) return false
     const phase = activePhasesRef.current[phaseIndex]
     if (!phase) return false
@@ -225,6 +255,7 @@ export function ChatPage() {
 
     await streamChatCompletion({
       messages: apiMessages,
+      signal,
       onChunk: (text) => {
         content += text
         if (!added) {
@@ -275,7 +306,7 @@ export function ChatPage() {
       content: `⏰ ${phase.time} — ${phase.title}`,
       timestamp: Date.now(),
     })
-    sendAIMessage(phaseIndex)
+    sendAIMessage(phaseIndex, replyAbortRef.current?.signal)
   }, [addMessage, sendAIMessage])
 
   // PLACEHOLDER_HANDLERS
@@ -336,7 +367,7 @@ export function ChatPage() {
 
     // 只有 AI 回复成功才推进流程：失败时用户通过"重新获取回复"重试，
     // 重试成功后若已达阈值再打开任务选择器（避免失败也提前推进）
-    const succeeded = await sendAIMessage(currentPhaseIndex)
+    const succeeded = await sendAIMessage(currentPhaseIndex, replyAbortRef.current?.signal)
     if (succeeded && newCount >= phase.messageThreshold) {
       showNextTaskOptions()
     }
@@ -352,7 +383,7 @@ export function ChatPage() {
       removeMessage(req.assistantMessageId)
     }
 
-    const succeeded = await sendAIMessage(req.phaseIndex)
+    const succeeded = await sendAIMessage(req.phaseIndex, replyAbortRef.current?.signal)
     if (succeeded) {
       // 重试成功后，若当前用户消息数已达到该阶段阈值，再打开任务选择器
       const phase = activePhasesRef.current[req.phaseIndex]
@@ -394,6 +425,7 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
 
     await streamChatCompletion({
       messages: [{ role: 'user', content: genPrompt }],
+      signal: replyAbortRef.current?.signal, // 代答请求同样挂接卸载取消
       onChunk: (text) => { generatedText += text },
       onDone: () => {
         setLoading(false)
@@ -428,13 +460,16 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
 
     // 最多尝试 MAX_ASSESSMENT_ATTEMPTS 次（首次请求 + 1 次重试）。
     // 解析/校验失败会重试；请求本身失败立即终止（语义见 runAssessmentWithRetry）。
+    // 挂接卸载取消信号：离开 /chat 时评估请求同样被中止。
+    let wasCancelled = false
     const parsed = await runAssessmentWithRetry(
-      requestAssessmentOnce,
+      (p: string) => requestAssessmentOnce(p, replyAbortRef.current?.signal),
       parseAssessmentResult,
       prompt,
       MAX_ASSESSMENT_ATTEMPTS,
       (attempt, err) => {
         if (err) {
+          if (err instanceof Error && err.message === '请求已取消') wasCancelled = true
           console.error(`[评估] 第 ${attempt} 次请求失败:`, err)
         } else {
           console.warn(`[评估] 第 ${attempt} 次解析/校验失败，${attempt < MAX_ASSESSMENT_ATTEMPTS ? '准备重试' : '已达最大尝试次数'}`)
@@ -453,6 +488,12 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
         })
       )
       setTimeout(() => navigate('/results'), 1500)
+      return
+    }
+
+    // 用户已离开 /chat（请求被取消）：不跳转兜底报告，静默结束即可
+    if (wasCancelled) {
+      setGenerating(false)
       return
     }
 
@@ -634,6 +675,7 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
         background={scenario.background}
         messages={colleagueMessages}
         onMessagesChange={setColleagueMessages}
+        getAbortSignal={() => replyAbortRef.current?.signal}
       />
     </div>
   )
