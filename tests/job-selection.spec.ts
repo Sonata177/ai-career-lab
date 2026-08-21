@@ -36,3 +36,43 @@ test('搜索不存在的岗位：不发 API 请求并显示空状态提示', asy
   // 页面不依赖任何 API（岗位数据是静态的）
   expect(apiRequestCount).toBe(0)
 })
+
+test('有场景岗位按钮为"开始体验"，无场景岗位按钮为"用 JD 生成体验"', async ({ page }) => {
+  await page.goto('/select')
+
+  // 运营实习生（有内置场景）→ 开始体验
+  const opsCard = page.locator('.job-card').filter({ hasText: '运营实习生的一天' })
+  await expect(opsCard.getByRole('button', { name: '开始体验' })).toBeVisible()
+  await expect(opsCard.getByRole('button', { name: '用 JD 生成体验' })).toBeHidden()
+
+  // 产品助理 / 市场实习生 / HR实习生（无内置场景）→ 用 JD 生成体验
+  for (const title of ['产品助理的一天', '市场实习生的一天', 'HR实习生的一天']) {
+    const card = page.locator('.job-card').filter({ hasText: title })
+    await expect(card.getByRole('button', { name: '用 JD 生成体验' })).toBeVisible()
+    await expect(card.getByRole('button', { name: '开始体验' })).toBeHidden()
+  }
+})
+
+test('无场景岗位：点击卡片不进入 /chat，跳转岗位真相镜并提示粘贴 JD', async ({ page }) => {
+  await page.goto('/select')
+
+  // 点击无场景岗位的产品助理卡片
+  await page.locator('.job-card').filter({ hasText: '产品助理的一天' }).click()
+
+  // 不能进入 /chat（避免空聊天来回弹），而是去岗位真相镜
+  await expect(page).toHaveURL(/\/mirror$/)
+
+  // 真相镜页展示"暂无内置场景"提示
+  await expect(page.getByText(/「产品助理的一天」暂无内置体验场景/)).toBeVisible()
+})
+
+test('无场景岗位的"用 JD 生成体验"按钮：同样跳转岗位真相镜而非 /chat', async ({ page }) => {
+  await page.goto('/select')
+
+  await page.locator('.job-card').filter({ hasText: '产品助理的一天' })
+    .getByRole('button', { name: '用 JD 生成体验' })
+    .click()
+
+  await expect(page).toHaveURL(/\/mirror$/)
+  await expect(page.getByText(/「产品助理的一天」暂无内置体验场景/)).toBeVisible()
+})

@@ -120,6 +120,24 @@
   margin: 0 auto;
 }
 
+/* 从岗位选择页跳转而来的提示（该岗位暂无内置场景） */
+.mirror-jd-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(124, 58, 237, 0.08);
+  border: 1px dashed var(--color-violet-300, #a78bfa);
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  color: var(--color-gray-700);
+}
+
+.mirror-jd-hint-icon {
+  font-size: 18px;
+}
+
 /* Input Card */
 .mirror-input-card {
   background: var(--color-white);

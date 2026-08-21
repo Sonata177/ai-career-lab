@@ -38,3 +38,6 @@ start-dev.bat
 start-dev.ps1
 stop-dev.bat
 启动前后端.lnk
+
+# Local session handoff (not part of the product)
+SESSION_HANDOFF.md

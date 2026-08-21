@@ -290,6 +290,18 @@
   transform: translateY(-1px);
 }
 
+/* 无内置场景的岗位：改用 JD 生成体验（虚线描边样式，示意需先粘贴 JD） */
+.job-start-btn.jd-start-btn {
+  background: var(--color-white);
+  color: var(--color-gray-600);
+  border: 1px dashed var(--color-gray-400);
+}
+
+.job-start-btn.jd-start-btn:hover {
+  background: var(--color-gray-50);
+  border-color: var(--color-gray-500);
+}
+
 /* Empty state - no matching jobs */
 .empty-jobs {
   grid-column: 1 / -1;

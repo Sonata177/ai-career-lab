@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { jobs, JOB_CATEGORIES } from '../data/jobs'
+import { getScenario } from '../data/scenarios'
 import { useJobStore } from '../store/jobStore'
 import { useChatStore } from '../store/chatStore'
 import './JobSelectionPage.css'
@@ -24,6 +25,13 @@ export function JobSelectionPage() {
     : jobs.filter((j) => j.category === activeCategory)
 
   const handleSelect = (job: typeof jobs[0]) => {
+    // 无内置场景的岗位：不能进入空聊天，跳转岗位真相镜粘贴 JD 生成专属体验
+    if (!getScenario(job.id)) {
+      navigate('/mirror', {
+        state: { fromJobSelection: true, jobTitle: job.title },
+      })
+      return
+    }
     setCurrentDay(1)
     // 清除上一岗位的会话进度（消息/时间轴/阶段），避免新岗位复用旧会话
     useChatStore.getState().reset()
@@ -124,7 +132,13 @@ export function JobSelectionPage() {
                     <span key={tag} className="job-tag">{tag}</span>
                   ))}
                 </div>
-                <button className="job-start-btn">开始体验</button>
+                {getScenario(job.id) ? (
+                  <button className="job-start-btn">开始体验</button>
+                ) : (
+                  <button className="job-start-btn jd-start-btn">
+                    用 JD 生成体验
+                  </button>
+                )}
               </motion.div>
             ))
           ) : (
