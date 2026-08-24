@@ -13,7 +13,9 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/api/health"]
       interval: 30s
-      timeout: 5s
+      # 后端连接池建连超时 15s：health 响应可能被数据库慢连拖到 15s，wget 超时必须更大，
+      # 否则数据库慢/挂时会导致容器被误判不健康、nginx 依赖阻塞不启动
+      timeout: 20s
       retries: 3
 
   nginx:

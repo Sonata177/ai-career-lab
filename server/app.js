@@ -4,6 +4,27 @@ import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import { getAssessmentValidationErrors } from './assessmentValidation.js'
 
+/** 转义 LIKE 通配符（% _ \），避免用户输入改变模糊匹配语义 */
+function escapeLikePattern(value) {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`)
+}
+
+/**
+ * 解析 from/to 日期查询参数：
+ * - 'YYYY-MM-DD'：视为当天（from 从 0 点起、to 到当天 23:59:59.999 止，均按 UTC）
+ * - 其余按 ISO 日期时间解析；解析失败返回 null（调用方返回 400）
+ */
+function parseDateFilter(value, endOfDay) {
+  const trimmed = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return endOfDay
+      ? new Date(`${trimmed}T23:59:59.999Z`)
+      : new Date(`${trimmed}T00:00:00.000Z`)
+  }
+  const d = new Date(trimmed)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
 /**
  * 创建 Express 应用（可注入 apiKey、fetchImpl 与 pool，便于测试：
  * 测试可传假 API Key、mock fetch 和假 pool，不会请求真实 DeepSeek/PostgreSQL）。
@@ -260,6 +281,115 @@ export function createApp({
       res.status(500).json({ error: 'Failed to save experience' })
     } finally {
       client?.release()
+    }
+  })
+
+  /**
+   * 体验列表：JOIN 两张表，按 finished_at 倒序。
+   * 只返回轻量字段（id/jobTitle/completedAt/overallScore/jobFitPercentage），
+   * 不带 messages/result 整包。
+   * 可选筛选：jobTitle（模糊）、from/to（finished_at 时间范围，含边界）。
+   */
+  app.get('/api/experiences', async (req, res) => {
+    if (!pool) {
+      return res.status(503).json({ error: 'Database not configured' })
+    }
+
+    const { jobTitle, from, to } = req.query
+
+    if (jobTitle !== undefined && typeof jobTitle !== 'string') {
+      return res.status(400).json({ error: 'jobTitle must be a string' })
+    }
+    let fromDate = null
+    if (from !== undefined && from !== '') {
+      if (typeof from !== 'string') {
+        return res.status(400).json({ error: 'from must be a valid date' })
+      }
+      fromDate = parseDateFilter(from, false)
+      if (!fromDate) return res.status(400).json({ error: 'from must be a valid date' })
+    }
+    let toDate = null
+    if (to !== undefined && to !== '') {
+      if (typeof to !== 'string') {
+        return res.status(400).json({ error: 'to must be a valid date' })
+      }
+      toDate = parseDateFilter(to, true)
+      if (!toDate) return res.status(400).json({ error: 'to must be a valid date' })
+    }
+
+    try {
+      const { rows } = await pool.query(
+        `SELECT e.id, e.job_title, e.finished_at, a.completed_at, a.overall_score, a.job_fit_percentage
+         FROM experiences e
+         JOIN assessments a ON a.experience_id = e.id
+         WHERE ($1::text IS NULL OR e.job_title ILIKE '%' || $1 || '%')
+           AND ($2::timestamptz IS NULL OR e.finished_at >= $2)
+           AND ($3::timestamptz IS NULL OR e.finished_at <= $3)
+         ORDER BY e.finished_at DESC, e.id DESC`,
+        [
+          jobTitle !== undefined && jobTitle.trim() !== '' ? escapeLikePattern(jobTitle.trim()) : null,
+          fromDate,
+          toDate,
+        ],
+      )
+      res.json({
+        items: rows.map((r) => ({
+          id: r.id,
+          jobTitle: r.job_title,
+          completedAt: r.completed_at,
+          overallScore: r.overall_score,
+          jobFitPercentage: r.job_fit_percentage,
+        })),
+      })
+    } catch (err) {
+      console.error('Failed to list experiences:', err.message)
+      res.status(500).json({ error: 'Failed to list experiences' })
+    }
+  })
+
+  /**
+   * 体验详情：对话（scenario/messages/colleagueMessages）+ 报告（result/分数），
+   * 供后续详情页/对比使用。记录不存在返回 404。
+   */
+  app.get('/api/experiences/:id', async (req, res) => {
+    if (!pool) {
+      return res.status(503).json({ error: 'Database not configured' })
+    }
+
+    const { id } = req.params
+    // uuid 格式校验：避免非法 id 触发数据库类型错误（归为 400 而非 500）
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return res.status(400).json({ error: 'Invalid experience id' })
+    }
+
+    try {
+      const { rows } = await pool.query(
+        `SELECT e.id, e.job_title, e.finished_at, e.scenario, e.messages, e.colleague_messages,
+                a.completed_at, a.overall_score, a.job_fit_percentage, a.result
+         FROM experiences e
+         JOIN assessments a ON a.experience_id = e.id
+         WHERE e.id = $1`,
+        [id],
+      )
+      const row = rows[0]
+      if (!row) {
+        return res.status(404).json({ error: 'Experience not found' })
+      }
+      res.json({
+        id: row.id,
+        jobTitle: row.job_title,
+        finishedAt: row.finished_at,
+        completedAt: row.completed_at,
+        overallScore: row.overall_score,
+        jobFitPercentage: row.job_fit_percentage,
+        scenario: row.scenario,
+        messages: row.messages,
+        colleagueMessages: row.colleague_messages,
+        result: row.result,
+      })
+    } catch (err) {
+      console.error('Failed to load experience:', err.message)
+      res.status(500).json({ error: 'Failed to load experience' })
     }
   })
 
