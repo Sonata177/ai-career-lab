@@ -1,21 +1,56 @@
+import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useHistoryStore } from '../store/historyStore'
+import {
+  fetchExperienceDetail, ExperienceApiError, type ExperienceDetail,
+} from '../services/experience'
 import './HistoryDetailPage.css'
+
+type DetailState =
+  | { status: 'loading' }
+  | { status: 'notFound' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; detail: ExperienceDetail }
 
 export function HistoryDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  // 从历史记录按 URL id 查找（不覆盖当前评估的 assessmentStore.result）
-  const record = useHistoryStore((s) => s.records.find((r) => r.id === id))
+  // 用 URL 里的 id 调 GET /api/experiences/:id（以云端为准，不读本地 store）
+  const [state, setState] = useState<DetailState>({ status: 'loading' })
+  // 重试触发：+1 使 effect 重新拉取
+  const [reloadTick, setReloadTick] = useState(0)
 
-  // 找不到记录：显示提示与返回入口，不展示空白页
-  if (!record) {
+  useEffect(() => {
+    if (!id) return // /history/:id 路由保证有 id；防御性短路
+    let cancelled = false
+    fetchExperienceDetail(id).then(
+      (detail) => {
+        if (!cancelled) setState({ status: 'ready', detail })
+      },
+      (err: unknown) => {
+        if (cancelled) return
+        if (err instanceof ExperienceApiError && err.status === 404) {
+          setState({ status: 'notFound' })
+        } else {
+          setState({ status: 'error', message: '加载报告失败，请稍后重试' })
+        }
+      }
+    )
+    return () => { cancelled = true }
+  }, [id, reloadTick])
+
+  const retry = () => {
+    setState({ status: 'loading' })
+    setReloadTick((t) => t + 1)
+  }
+
+  // 404 或缺少 id：显示提示与返回入口，不展示空白页
+  if (state.status === 'notFound') {
     return (
       <div className="history-detail-page">
         <div className="history-detail-missing">
           <div className="history-detail-missing-icon">🔍</div>
           <h1>报告不存在</h1>
-          <p>该评估记录可能已被清空或链接已失效。</p>
+          <p>该评估记录可能已被删除或链接已失效。</p>
           <button className="btn btn-primary" onClick={() => navigate('/history')}>
             返回历史记录
           </button>
@@ -24,7 +59,39 @@ export function HistoryDetailPage() {
     )
   }
 
-  const result = record.result
+  if (state.status === 'loading') {
+    return (
+      <div className="history-detail-page">
+        <div className="history-detail-loading">正在加载报告…</div>
+        <button className="btn history-back-btn" onClick={() => navigate('/history')}>
+          ← 返回历史记录
+        </button>
+      </div>
+    )
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className="history-detail-page">
+        <div className="history-detail-missing">
+          <div className="history-detail-missing-icon">⚠️</div>
+          <h1>报告加载失败</h1>
+          <p>{state.message}</p>
+          <div className="history-detail-error-actions">
+            <button className="btn btn-primary" onClick={retry}>
+              重试
+            </button>
+            <button className="btn" onClick={() => navigate('/history')}>
+              返回历史记录
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const { detail } = state
+  const result = detail.result
 
   return (
     <div className="history-detail-page">
@@ -32,19 +99,19 @@ export function HistoryDetailPage() {
         <button className="btn history-back-btn" onClick={() => navigate('/history')}>
           ← 返回历史记录
         </button>
-        <h1>{record.jobTitle}</h1>
+        <h1>{detail.jobTitle}</h1>
         <p className="history-detail-date">
-          完成时间：{new Date(record.completedAt).toLocaleString('zh-CN')}
+          完成时间：{new Date(detail.completedAt).toLocaleString('zh-CN')}
         </p>
       </div>
 
       <div className="history-detail-scores">
         <div className="history-score">
-          <span className="history-score-value">{record.overallScore}</span>
+          <span className="history-score-value">{detail.overallScore}</span>
           <span className="history-score-label">综合评分</span>
         </div>
         <div className="history-score">
-          <span className="history-score-value">{record.jobFitPercentage}%</span>
+          <span className="history-score-value">{detail.jobFitPercentage}%</span>
           <span className="history-score-label">岗位适配度</span>
         </div>
       </div>
