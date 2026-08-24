@@ -10,6 +10,7 @@ import { streamChatCompletion, formatMessagesForAPI } from '../services/deepseek
 import { parseAssessmentResult } from '../utils/assessmentParsing'
 import { runAssessmentWithRetry } from '../utils/assessmentRetry'
 import { buildAssessmentRecord } from '../utils/assessmentHistory'
+import { saveExperience } from '../services/experience'
 import { useHistoryStore } from '../store/historyStore'
 import { MessageBubble } from '../components/chat/MessageBubble'
 import { ChatInput } from '../components/chat/ChatInput'
@@ -490,6 +491,19 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
           result: parsed,
         })
       )
+      // 体验入库（尽力而为）：仅合法 parsed 路径调用，兜底报告不调用；
+      // 失败只 console，不阻塞结果页跳转。数据用 getState() 取当前会话快照：
+      // 岗位、实际用过的阶段（非未随机化剧本）、消息、同事消息、parsed。
+      const chat = useChatStore.getState()
+      void saveExperience({
+        jobId: scenario.jobId,
+        jobTitle: scenario.jobTitle,
+        scenario,
+        activePhases: chat.activePhases,
+        messages: chat.messages,
+        colleagueMessages: chat.colleagueMessages,
+        result: parsed,
+      }).catch((err) => console.error('[体验入库] 保存失败:', err))
       setTimeout(() => navigate('/results'), 1500)
       return
     }

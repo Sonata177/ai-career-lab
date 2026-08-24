@@ -34,13 +34,35 @@ function createSseResponse(chunks) {
 }
 
 describe('createApp', () => {
-  it('GET /api/health 返回 200 和 { status: "ok" }', async () => {
+  it('GET /api/health 返回 200 和 { status: "ok" }；未传 pool 时数据库标明未配置', async () => {
     const { app } = makeApp()
 
     const res = await request(app).get('/api/health')
 
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ status: 'ok' })
+    expect(res.body).toEqual({ status: 'ok', database: { configured: false } })
+  })
+
+  it('GET /api/health：传入 pool 且 SELECT 1 成功，数据库标记为已连通', async () => {
+    const pool = { query: vi.fn().mockResolvedValue({ rows: [{ '?column?': 1 }] }) }
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get('/api/health')
+
+    expect(res.status).toBe(200)
+    expect(pool.query).toHaveBeenCalledWith('SELECT 1')
+    expect(res.body).toEqual({ status: 'ok', database: { configured: true, connected: true } })
+  })
+
+  it('GET /api/health：传入 pool 但 SELECT 1 失败（数据库不可达），返回 200 并标记未连通', async () => {
+    const pool = { query: vi.fn().mockRejectedValue(new Error('connection refused')) }
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get('/api/health')
+
+    expect(res.status).toBe(200)
+    expect(pool.query).toHaveBeenCalledWith('SELECT 1')
+    expect(res.body).toEqual({ status: 'ok', database: { configured: true, connected: false } })
   })
 
   it('POST /api/chat/completions 缺少 messages 返回 400，且不调用 mock fetch', async () => {
@@ -387,5 +409,173 @@ describe('上游超时与客户端断开', () => {
     } finally {
       server.close()
     }
+  })
+})
+
+describe('POST /api/experiences', () => {
+  const DIMENSION_NAMES = [
+    '沟通表达', '问题拆解', '执行落地', '用户同理心',
+    '数据敏感度', '优先级判断', '协作与求助',
+  ]
+
+  /** 七维合法 result（与前端 isAssessmentResult 规则一致的种子数据） */
+  function validResult(overrides = {}) {
+    return {
+      overallScore: 78,
+      jobFitPercentage: 66,
+      dimensions: DIMENSION_NAMES.map((name) => ({
+        name, score: 70, evidence: '积极回应', color: '#16a34a',
+      })),
+      strengths: ['善于沟通'],
+      improvements: ['加强数据意识'],
+      suggestions: ['建议1'],
+      fitAdvice: '总体适合该岗位',
+      ...overrides,
+    }
+  }
+
+  /** 合法请求体（colleagueMessages 故意不传：验证缺省存 []） */
+  function validBody(overrides = {}) {
+    return {
+      jobId: 'operations-intern',
+      jobTitle: '运营实习生',
+      scenario: {
+        jobId: 'operations-intern',
+        jobTitle: '运营实习生',
+        background: '背景',
+        userIdentity: '身份',
+        phases: [{ id: 'day1-task1' }],
+      },
+      activePhases: [{ id: 'day1-task1', day: 1, time: '09:00', title: '晨会任务' }],
+      messages: [{ role: 'user', content: '主管好' }],
+      result: validResult(),
+      ...overrides,
+    }
+  }
+
+  /** 假 pool：connect 返回假 client，按 SQL 分发结果并记录调用（不打真实库） */
+  function makeFakePool({ failOnInsert = false } = {}) {
+    const client = {
+      release: vi.fn(),
+      query: vi.fn(async (sql, params) => {
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] }
+        if (sql.startsWith('INSERT INTO experiences')) {
+          if (failOnInsert) throw new Error('insert failed')
+          return { rows: [{ id: 'a1b2c3d4-0000-4000-8000-000000000001' }] }
+        }
+        if (sql.startsWith('INSERT INTO assessments')) return { rows: [] }
+        return { rows: [] }
+      }),
+    }
+    const pool = { connect: vi.fn(async () => client) }
+    return { pool, client }
+  }
+
+  it('成功插入：同一事务先插 experiences 再插 assessments，colleague_messages 缺省存 []', async () => {
+    const { pool, client } = makeFakePool()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).post('/api/experiences').send(validBody())
+
+    expect(res.status).toBe(201)
+    expect(res.body.id).toBe('a1b2c3d4-0000-4000-8000-000000000001')
+    expect(pool.connect).toHaveBeenCalledTimes(1)
+
+    // 事务顺序：BEGIN → INSERT experiences → INSERT assessments → COMMIT
+    expect(client.query.mock.calls.map(([sql]) => sql)).toEqual([
+      'BEGIN',
+      expect.stringContaining('INSERT INTO experiences'),
+      expect.stringContaining('INSERT INTO assessments'),
+      'COMMIT',
+    ])
+
+    // experiences 参数：job_id / job_title / scenario(phases=activePhases) / messages / colleague_messages / finished_at
+    // （jsonb 参数为 JSON 字符串，node-postgres 数组需要 stringify）
+    const [, expParams] = client.query.mock.calls[1]
+    expect(expParams[0]).toBe('operations-intern')
+    expect(expParams[1]).toBe('运营实习生')
+    expect(JSON.parse(expParams[2])).toMatchObject({
+      jobId: 'operations-intern',
+      phases: [{ id: 'day1-task1', day: 1, time: '09:00', title: '晨会任务' }],
+    })
+    expect(JSON.parse(expParams[3])).toEqual([{ role: 'user', content: '主管好' }])
+    expect(JSON.parse(expParams[4])).toEqual([]) // 没有问同事 → 存 []
+    expect(expParams[5]).toBeInstanceOf(Date)
+
+    // assessments 参数：experience_id / completed_at / overall_score / job_fit_percentage / result
+    const [, assParams] = client.query.mock.calls[2]
+    expect(assParams[0]).toBe('a1b2c3d4-0000-4000-8000-000000000001')
+    expect(assParams[1]).toBeInstanceOf(Date)
+    expect(assParams[2]).toBe(78)
+    expect(assParams[3]).toBe(66)
+    expect(JSON.parse(assParams[4])).toEqual(validResult())
+
+    // 连接归还
+    expect(client.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('显式传入 colleagueMessages：原样入库', async () => {
+    const { pool, client } = makeFakePool()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const colleague = [{ id: 'c1', role: 'assistant', content: '建议先梳理需求' }]
+    const res = await request(app)
+      .post('/api/experiences')
+      .send(validBody({ colleagueMessages: colleague }))
+
+    expect(res.status).toBe(201)
+    const expCall = client.query.mock.calls.find(([sql]) => sql.startsWith('INSERT INTO experiences'))
+    expect(JSON.parse(expCall[1][4])).toEqual(colleague)
+  })
+
+  it.each([
+    ['缺 jobId', validBody({ jobId: undefined }), 'job_id is required'],
+    ['jobId 为空白', validBody({ jobId: '   ' }), 'job_id is required'],
+    ['缺 jobTitle', validBody({ jobTitle: undefined }), 'job_title is required'],
+    ['缺 scenario', validBody({ scenario: undefined }), 'scenario is required'],
+    ['缺 messages', validBody({ messages: undefined }), 'messages'],
+    ['messages 为空数组', validBody({ messages: [] }), 'messages'],
+    ['result 非法（七维校验不通过）', validBody({ result: { overallScore: 'high' } }), 'Invalid result'],
+    ['colleague_messages 非数组', validBody({ colleagueMessages: 'none' }), 'colleague_messages'],
+  ])('%s：返回 400 且不触库', async (_name, body, keyword) => {
+    const { pool } = makeFakePool()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).post('/api/experiences').send(body)
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toContain(keyword)
+    expect(pool.connect).not.toHaveBeenCalled()
+  })
+
+  it('未配置 pool：返回 503 明确错误（降级，不退出进程）', async () => {
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn() })
+
+    const res = await request(app).post('/api/experiences').send(validBody())
+
+    expect(res.status).toBe(503)
+    expect(res.body).toEqual({ error: 'Database not configured' })
+  })
+
+  it('写入失败：返回 500 并回滚，连接归还（进程不退出）', async () => {
+    const { pool, client } = makeFakePool({ failOnInsert: true })
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).post('/api/experiences').send(validBody())
+
+    expect(res.status).toBe(500)
+    expect(res.body).toEqual({ error: 'Failed to save experience' })
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK')
+    expect(client.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('数据库不可达（connect 失败）：返回 500，进程不退出', async () => {
+    const pool = { connect: vi.fn(async () => { throw new Error('connection refused') }) }
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).post('/api/experiences').send(validBody())
+
+    expect(res.status).toBe(500)
+    expect(res.body).toEqual({ error: 'Failed to save experience' })
   })
 })
