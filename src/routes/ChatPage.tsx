@@ -9,9 +9,7 @@ import { buildAssessmentPrompt } from '../prompts/assessmentPrompt'
 import { streamChatCompletion, formatMessagesForAPI } from '../services/deepseek'
 import { parseAssessmentResult } from '../utils/assessmentParsing'
 import { runAssessmentWithRetry } from '../utils/assessmentRetry'
-import { buildAssessmentRecord } from '../utils/assessmentHistory'
 import { saveExperience } from '../services/experience'
-import { useHistoryStore } from '../store/historyStore'
 import { MessageBubble } from '../components/chat/MessageBubble'
 import { ChatInput } from '../components/chat/ChatInput'
 import { TimelineBar } from '../components/chat/TimelineBar'
@@ -484,14 +482,8 @@ ${phaseMessages.filter(m => m.role !== 'system').map(m => `[${m.role === 'user' 
     if (parsed) {
       setResult(parsed)
       setGenerating(false)
-      // 评估历史：仅合法结果入库（兜底报告不计入）；用 getState 避免引入订阅依赖
-      useHistoryStore.getState().addRecord(
-        buildAssessmentRecord({
-          jobTitle: useJobStore.getState().selectedJob?.title || '岗位体验',
-          result: parsed,
-        })
-      )
       // 体验入库（尽力而为）：仅合法 parsed 路径调用，兜底报告不调用；
+      // 只写云端（/api/experiences），不再写本地历史 store（历史页以 Postgres 为准）。
       // 失败只 console，不阻塞结果页跳转。数据用 getState() 取当前会话快照：
       // 岗位、实际用过的阶段（非未随机化剧本）、消息、同事消息、parsed。
       const chat = useChatStore.getState()
