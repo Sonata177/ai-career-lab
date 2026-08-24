@@ -42,9 +42,12 @@ function makeResult(overallScore: number, dimScores: Record<string, number> = {}
   }
 }
 
+/** 列表接口 URL：可带查询串（glob 末尾不能匹配 ?query，需用正则） */
+const LIST_URL = /\/api\/experiences(\?.*)?$/
+
 /** 拦截 GET /api/experiences 列表 */
 function mockList(page: import('@playwright/test').Page, items: unknown[], status = 200) {
-  return page.route('**/api/experiences', (route) =>
+  return page.route(LIST_URL, (route) =>
     route.fulfill({
       status,
       contentType: 'application/json',
@@ -77,6 +80,21 @@ function mockDetail(
   })
 }
 
+/** 拦截 GET /api/experiences 列表（可按 query 挑选不同数据，模拟后端筛选） */
+function mockListWithQuery(
+  page: import('@playwright/test').Page,
+  pick: (url: URL) => unknown[],
+  status = 200
+) {
+  return page.route(LIST_URL, (route) =>
+    route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: pick(new URL(route.request().url())) }),
+    })
+  )
+}
+
 test('无历史记录：显示空状态，可通过"开始岗位体验"进入选岗页', async ({ page }) => {
   await mockList(page, [])
   await mockDetail(page, {})
@@ -105,6 +123,101 @@ test('有历史记录（云端数据）：展示岗位名称、完成时间、�
   await expect(page.getByText('88', { exact: true })).toBeVisible()
   // 完成时间已渲染（日期非空）
   await expect(page.locator('.history-card-date').first()).not.toHaveText('')
+})
+
+test('不填条件：请求不带查询参数，列出全部', async ({ page }) => {
+  const urls: string[] = []
+  await page.route(LIST_URL, (route) => {
+    urls.push(route.request().url())
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [makeListItem('r1', '运营实习生的一天', 78)] }),
+    })
+  })
+  await mockDetail(page, {})
+
+  await page.goto('/history')
+  await expect(page.locator('.history-card')).toHaveCount(1)
+  expect(urls.every((u) => !u.includes('?'))).toBe(true)
+})
+
+test('按岗位筛选：mock 带 query 的 GET，列表只剩匹配项', async ({ page }) => {
+  const all = [
+    makeListItem('r1', '运营实习生的一天', 78),
+    makeListItem('r2', '销售代表的一天', 88),
+  ]
+  await mockListWithQuery(page, (url) => {
+    const q = url.searchParams.get('jobTitle')
+    return q === '运营' ? [all[0]] : all
+  })
+  await mockDetail(page, {})
+
+  await page.goto('/history')
+  await expect(page.locator('.history-card')).toHaveCount(2)
+
+  // 输入岗位名称，点「筛选」后才发请求
+  await page.getByLabel('按岗位名称筛选').fill('运营')
+  await expect(page.locator('.history-card')).toHaveCount(2) // 未点筛选：数据不变
+  await page.getByRole('button', { name: '筛选' }).click()
+
+  await expect(page.locator('.history-card')).toHaveCount(1)
+  await expect(page.getByText('运营实习生的一天')).toBeVisible()
+  await expect(page.getByText('销售代表的一天')).toBeHidden()
+})
+
+test('时间范围外：显示「没有符合条件的记录」（空状态，不是加载失败），可清除筛选恢复', async ({ page }) => {
+  const item = makeListItem('r1', '运营实习生的一天', 78)
+  await mockListWithQuery(page, (url) => {
+    const from = url.searchParams.get('from')
+    const to = url.searchParams.get('to')
+    // 模拟：带 from/to 的时间范围查不到数据
+    return from && to ? [] : [item]
+  })
+  await mockDetail(page, {})
+
+  await page.goto('/history')
+  await expect(page.locator('.history-card')).toHaveCount(1)
+
+  // 选择一个必然查不到的时间范围
+  const pastFrom = new Date(Date.now() - 4 * 86400000).toISOString().slice(0, 10)
+  const pastTo = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10)
+  await page.getByLabel('开始日期').fill(pastFrom)
+  await page.getByLabel('结束日期').fill(pastTo)
+  await page.getByRole('button', { name: '筛选' }).click()
+
+  await expect(page.getByText('没有符合条件的记录')).toBeVisible()
+  await expect(page.getByText('历史记录加载失败')).toBeHidden()
+
+  // 清除筛选后恢复全部
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  await expect(page.locator('.history-card')).toHaveCount(1)
+})
+
+test('开始日期晚于结束日期：前端拦截提示，不发请求', async ({ page }) => {
+  let requestCount = 0
+  await page.route(LIST_URL, (route) => {
+    requestCount++
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [makeListItem('r1', '运营实习生的一天', 78)] }),
+    })
+  })
+  await mockDetail(page, {})
+
+  await page.goto('/history')
+  await expect(page.locator('.history-card')).toHaveCount(1)
+  const before = requestCount
+
+  await page.getByLabel('开始日期').fill('2026-08-10')
+  await page.getByLabel('结束日期').fill('2026-08-01')
+  await page.getByRole('button', { name: '筛选' }).click()
+
+  await expect(page.getByText('开始日期不能晚于结束日期')).toBeVisible()
+  expect(requestCount).toBe(before) // 没有发出新请求
+  // 数据未被破坏：列表仍在
+  await expect(page.locator('.history-card')).toHaveCount(1)
 })
 
 test('查看报告：按 URL id 调详情接口，展示岗位名称、综合评分与七维结果', async ({ page }) => {

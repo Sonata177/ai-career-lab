@@ -58,9 +58,26 @@ export async function saveExperience(input: {
   }
 }
 
+/** 列表筛选条件（均可选；空值不拼进查询串） */
+export interface ExperienceListFilter {
+  /** 岗位名称（模糊匹配） */
+  jobTitle?: string
+  /** 开始日期（YYYY-MM-DD 或 ISO 时间，含边界） */
+  from?: string
+  /** 结束日期（YYYY-MM-DD 或 ISO 时间，含边界） */
+  to?: string
+}
+
 /** 体验列表（读库，按完成时间倒序；失败抛 ExperienceApiError） */
-export async function fetchExperienceList(): Promise<ExperienceListItem[]> {
-  const response = await fetch('/api/experiences')
+export async function fetchExperienceList(
+  filter: ExperienceListFilter = {}
+): Promise<ExperienceListItem[]> {
+  const params = new URLSearchParams()
+  if (filter.jobTitle) params.set('jobTitle', filter.jobTitle)
+  if (filter.from) params.set('from', filter.from)
+  if (filter.to) params.set('to', filter.to)
+  const query = params.toString()
+  const response = await fetch(`/api/experiences${query ? `?${query}` : ''}`)
   if (!response.ok) {
     throw new ExperienceApiError(response.status)
   }
