@@ -38,6 +38,7 @@ cp server/.env.example server/.env
 | `DEEPSEEK_API_KEY` | ✅ 必填 | 无 | DeepSeek API 密钥。缺失时后端启动会报错退出（`DEEPSEEK_API_KEY environment variable is required`）。密钥只存在于 `server/.env`，仅由后端使用，**不会下发到前端** |
 | `PORT` | 可选 | `3001` | 后端监听端口。部署时如与容器端口冲突可修改（需同步 nginx/docker-compose 配置） |
 | `ALLOWED_ORIGINS` | 可选 | `http://localhost:5173` | CORS 白名单，**逗号分隔**（不要带空格）。本地开发默认放行 Vite 地址；生产/联调时必须改为线上域名，否则浏览器跨域请求会被拒绝 |
+| `DATABASE_URL` | 可选 | 无 | PostgreSQL 连接串。缺失时后端**照常启动**（评估主流程不受影响），仅数据库入库不可用，`GET /api/health` 中会标明未配置 |
 
 `server/.env` 示例：
 

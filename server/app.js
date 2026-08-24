@@ -2,21 +2,25 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
+import { getAssessmentValidationErrors } from './assessmentValidation.js'
 
 /**
- * 创建 Express 应用（可注入 apiKey 与 fetchImpl，便于测试：
- * 测试可传假 API Key 和 mock fetch，不会请求真实 DeepSeek）。
+ * 创建 Express 应用（可注入 apiKey、fetchImpl 与 pool，便于测试：
+ * 测试可传假 API Key、mock fetch 和假 pool，不会请求真实 DeepSeek/PostgreSQL）。
  *
  * @param {object} options
  * @param {string} options.apiKey    DeepSeek API 密钥（必填）
  * @param {typeof fetch} [options.fetchImpl] fetch 实现，默认使用全局 fetch
  * @param {number} [options.upstreamTimeoutMs] 上游无响应超时（毫秒），默认 60s
+ * @param {import('pg').Pool} [options.pool] PostgreSQL 连接池（可选）。
+ *   不传时数据库功能不可用（health 中标明未配置），评估主流程不受影响
  * @returns {import('express').Express}
  */
 export function createApp({
   apiKey,
   fetchImpl = fetch,
   upstreamTimeoutMs = 60_000,
+  pool,
 }) {
   if (!apiKey) {
     throw new Error('apiKey is required')
@@ -181,8 +185,97 @@ export function createApp({
     }
   })
 
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok' })
+  /**
+   * 完整体验入库（可选功能，需注入 pool）：
+   * 同一事务先插 experiences，再插 assessments（后者外键指向前者）。
+   * - 校验：jobId/jobTitle/scenario/messages 必填，result 沿用七维校验
+   * - colleagueMessages 缺省存 []
+   * - activePhases 为实际使用（随机化后）的阶段，覆盖 scenario 中的剧本 phases
+   * - 未配置 pool 或写入失败：返回 503/500，绝不让进程退出
+   */
+  app.post('/api/experiences', async (req, res) => {
+    if (!pool) {
+      return res.status(503).json({ error: 'Database not configured' })
+    }
+
+    const {
+      jobId, jobTitle, scenario, activePhases,
+      messages, colleagueMessages, result,
+    } = req.body ?? {}
+
+    if (typeof jobId !== 'string' || jobId.trim() === '') {
+      return res.status(400).json({ error: 'job_id is required' })
+    }
+    if (typeof jobTitle !== 'string' || jobTitle.trim() === '') {
+      return res.status(400).json({ error: 'job_title is required' })
+    }
+    if (typeof scenario !== 'object' || scenario === null || Array.isArray(scenario)) {
+      return res.status(400).json({ error: 'scenario is required' })
+    }
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'messages must be a non-empty array' })
+    }
+    if (colleagueMessages !== undefined && !Array.isArray(colleagueMessages)) {
+      return res.status(400).json({ error: 'colleague_messages must be an array' })
+    }
+    const resultErrors = getAssessmentValidationErrors(result)
+    if (resultErrors.length > 0) {
+      return res.status(400).json({ error: 'Invalid result', details: resultErrors })
+    }
+
+    // 用实际用过的阶段覆盖剧本原始 phases（未提供或为空时回退 scenario.phases）
+    const scenarioToStore = Array.isArray(activePhases) && activePhases.length > 0
+      ? { ...scenario, phases: activePhases }
+      : scenario
+
+    // 注意：node-postgres 会把 JS 数组按 PG 数组字面量序列化，jsonb 列必须先 JSON.stringify
+    let client
+    try {
+      client = await pool.connect()
+      await client.query('BEGIN')
+      const expRes = await client.query(
+        `INSERT INTO experiences (job_id, job_title, scenario, messages, colleague_messages, finished_at)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [
+          jobId.trim(), jobTitle.trim(),
+          JSON.stringify(scenarioToStore), JSON.stringify(messages), JSON.stringify(colleagueMessages ?? []),
+          new Date(),
+        ],
+      )
+      const experienceId = expRes.rows[0].id
+      await client.query(
+        `INSERT INTO assessments (experience_id, completed_at, overall_score, job_fit_percentage, result)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [experienceId, new Date(), result.overallScore, result.jobFitPercentage, JSON.stringify(result)],
+      )
+      await client.query('COMMIT')
+      res.status(201).json({ id: experienceId })
+    } catch (err) {
+      try {
+        await client?.query('ROLLBACK')
+      } catch {
+        // 连接已断时 ROLLBACK 失败可忽略（外层主错误已记录）
+      }
+      console.error('Failed to save experience:', err.message)
+      res.status(500).json({ error: 'Failed to save experience' })
+    } finally {
+      client?.release()
+    }
+  })
+
+  app.get('/api/health', async (req, res) => {
+    if (!pool) {
+      // 未配置数据库：主流程仍可用，仅标明入库不可用
+      return res.json({ status: 'ok', database: { configured: false } })
+    }
+    try {
+      await pool.query('SELECT 1')
+      res.json({ status: 'ok', database: { configured: true, connected: true } })
+    } catch (err) {
+      // 数据库不可达不视为服务故障：返回 200 并在 JSON 中标明未连通
+      console.warn('Database health check failed:', err.message)
+      res.json({ status: 'ok', database: { configured: true, connected: false } })
+    }
   })
 
   return app
