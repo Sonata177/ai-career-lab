@@ -147,6 +147,65 @@
   opacity: 0.9;
 }
 
+/* Filter bar */
+.history-filter {
+  max-width: 960px;
+  margin: 0 auto 24px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.history-filter-input,
+.history-filter-date {
+  padding: 10px 12px;
+  border: 1px solid var(--color-gray-300);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--color-white);
+  color: var(--color-gray-900);
+}
+
+.history-filter-input {
+  min-width: 160px;
+  flex: 1;
+  max-width: 260px;
+}
+
+.history-filter-date {
+  width: 150px;
+}
+
+.history-filter-sep {
+  color: var(--color-gray-500);
+  font-size: 14px;
+}
+
+.history-filter-btn {
+  padding: 10px 20px;
+  font-size: 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.history-filter-error {
+  max-width: 960px;
+  margin: -12px auto 16px;
+  font-size: 13px;
+  color: #e11d48;
+}
+
+@media (max-width: 768px) {
+  .history-filter-input {
+    max-width: none;
+    flex-basis: 100%;
+  }
+  .history-filter-date {
+    flex: 1;
+  }
+}
+
 /* Loading / error states */
 .history-loading,
 .history-error {
