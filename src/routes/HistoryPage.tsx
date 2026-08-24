@@ -1,15 +1,45 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useHistoryStore } from '../store/historyStore'
+import {
+  fetchExperienceList, ExperienceApiError, type ExperienceListItem,
+} from '../services/experience'
 import './HistoryPage.css'
+
+type LoadState =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; items: ExperienceListItem[] }
 
 export function HistoryPage() {
   const navigate = useNavigate()
-  const records = useHistoryStore((s) => s.records)
-  const clear = useHistoryStore((s) => s.clear)
-  const [confirmingClear, setConfirmingClear] = useState(false)
+  const [state, setState] = useState<LoadState>({ status: 'loading' })
   // 对比选择：最多两条
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  // 重试触发：+1 使 effect 重新拉取
+  const [reloadTick, setReloadTick] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchExperienceList().then(
+      (items) => {
+        if (!cancelled) setState({ status: 'ready', items })
+      },
+      (err: unknown) => {
+        if (cancelled) return
+        // 503：后端未配置数据库；其余网络/服务错误
+        const message = err instanceof ExperienceApiError && err.status === 503
+          ? '历史服务未配置数据库，暂时无法读取云端记录'
+          : '加载历史记录失败，请稍后重试'
+        setState({ status: 'error', message })
+      }
+    )
+    return () => { cancelled = true }
+  }, [reloadTick])
+
+  const retry = () => {
+    setState({ status: 'loading' })
+    setReloadTick((t) => t + 1)
+  }
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -24,16 +54,38 @@ export function HistoryPage() {
     navigate(`/history/compare?ids=${encodeURIComponent(selectedIds.join(','))}`)
   }
 
-  // 两步确认：第一次点击进入确认态，确认后真正清空
-  const handleClearClick = () => {
-    if (confirmingClear) {
-      clear()
-      setConfirmingClear(false)
-      setSelectedIds([]) // 清空历史后，选择状态自动清除
-    } else {
-      setConfirmingClear(true)
-    }
+  if (state.status === 'loading') {
+    return (
+      <div className="history-page">
+        <div className="history-header">
+          <h1>评估历史</h1>
+          <p>查看你过往的岗位体验评估报告</p>
+        </div>
+        <div className="history-loading">正在加载历史记录…</div>
+      </div>
+    )
   }
+
+  if (state.status === 'error') {
+    return (
+      <div className="history-page">
+        <div className="history-header">
+          <h1>评估历史</h1>
+          <p>查看你过往的岗位体验评估报告</p>
+        </div>
+        <div className="history-error">
+          <div className="history-empty-icon">⚠️</div>
+          <p className="history-empty-title">历史记录加载失败</p>
+          <p className="history-empty-sub">{state.message}</p>
+          <button className="btn btn-primary" onClick={retry}>
+            重试
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const records = state.items
 
   return (
     <div className="history-page">
@@ -103,23 +155,17 @@ export function HistoryPage() {
             >
               对比报告
             </button>
-            {confirmingClear ? (
-              <div className="history-confirm">
-                <span className="history-confirm-text">
-                  确定清空全部历史记录？此操作不可恢复。
-                </span>
-                <button className="btn history-confirm-yes" onClick={handleClearClick}>
-                  确认清空
-                </button>
-                <button className="btn history-confirm-no" onClick={() => setConfirmingClear(false)}>
-                  取消
-                </button>
-              </div>
-            ) : (
-              <button className="btn history-clear-btn" onClick={handleClearClick}>
-                清空历史
-              </button>
-            )}
+            {/* 第一期不做删除接口：禁用"清空历史"，避免用户误以为本地/云端被删 */}
+            <button
+              className="btn history-clear-btn"
+              disabled
+              title="清空功能即将上线"
+            >
+              清空历史
+            </button>
+            <p className="history-clear-note">
+              云端记录仍保留（当前版本暂不支持删除，即将上线）
+            </p>
           </div>
         </>
       )}
