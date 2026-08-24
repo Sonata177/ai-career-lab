@@ -139,7 +139,7 @@ test('刷新结果页：评分、岗位名称与"继续体验 Day 2"均保留（
   await expect(page.getByRole('button', { name: '继续体验 Day 2' })).toBeVisible()
 })
 
-test('完成评估后写入历史记录（localStorage 持久化）', async ({ page }) => {
+test('完成评估后：跳转结果页、不再写入本地历史（历史以 Postgres 为准）', async ({ page }) => {
   test.setTimeout(60000)
   await mockApi(page)
 
@@ -147,22 +147,10 @@ test('完成评估后写入历史记录（localStorage 持久化）', async ({ p
   await page.getByRole('button', { name: '生成评估报告' }).click()
   await expect(page).toHaveURL(/\/results$/, { timeout: 15000 })
 
-  // 历史记录已写入 localStorage（zustand persist 格式：{ state, version }）
+  // 双写已移除：评估成功只走云端（POST /api/experiences，尽力而为），
+  // 本地 localStorage 历史不再是数据源（该键不复存在）
   const stored = await page.evaluate(() =>
     localStorage.getItem('assessment-history-store')
   )
-  expect(stored).toBeTruthy()
-  const { state } = JSON.parse(stored as string)
-  expect(state.records).toHaveLength(1)
-
-  const record = state.records[0]
-  expect(record.id).toBeTruthy()
-  expect(record.jobTitle).toBe('运营实习生的一天')
-  expect(Number.isNaN(Date.parse(record.completedAt))).toBe(false)
-  expect(record.overallScore).toBe(78)
-  expect(record.jobFitPercentage).toBe(82)
-  // 七维评分统一从 result.dimensions 读取，顶层不重复存储
-  expect(record.dimensions).toBeUndefined()
-  expect(record.result.dimensions).toHaveLength(7)
-  expect(record.result.overallScore).toBe(78)
+  expect(stored).toBeNull()
 })

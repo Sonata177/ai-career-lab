@@ -1,7 +1,27 @@
-import type { AssessmentRecord } from './assessmentHistory'
+import type { AssessmentResult } from '../types/assessment'
 import { ASSESSMENT_DIMENSION_NAMES } from './assessmentValidation'
 
 export type DimensionTrend = 'up' | 'down' | 'same'
+
+/**
+ * 对比所需的最小记录结构：与云端 ExperienceDetail 结构兼容，
+ * 列表/详情/对比均以 Postgres 为准，本地（localStorage）历史已废弃。
+ * 注意：七维评分不单独存储，统一读取 result.dimensions。
+ */
+export interface AssessmentRecord {
+  /** 唯一标识（云端 experience id） */
+  id: string
+  /** 岗位名称（展示用） */
+  jobTitle: string
+  /** 完成日期（ISO 时间戳） */
+  completedAt: string
+  /** 总分 */
+  overallScore: number
+  /** 岗位适配度 */
+  jobFitPercentage: number
+  /** 完整评估结果（含七维评分） */
+  result: AssessmentResult
+}
 
 export interface DimensionDiff {
   name: string

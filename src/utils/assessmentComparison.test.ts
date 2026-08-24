@@ -1,14 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { compareAssessments } from './assessmentComparison'
-import { buildAssessmentRecord } from './assessmentHistory'
 import { createValidAssessment } from '../test/assessmentFixture'
 import { ASSESSMENT_DIMENSION_NAMES } from './assessmentValidation'
 import type { AssessmentResult } from '../types/assessment'
 
-/** 构造一条记录：可按 id 与完成时间定制 */
+/** 构造一条记录（最小记录结构，与云端 ExperienceDetail 兼容）：可按 id 与完成时间定制 */
 function makeRecord(id: string, completedAt: string, result: AssessmentResult) {
-  const record = buildAssessmentRecord({ jobTitle: '运营实习生的一天', result })
-  return { ...record, id, completedAt }
+  return {
+    id,
+    jobTitle: '运营实习生的一天',
+    completedAt,
+    overallScore: result.overallScore,
+    jobFitPercentage: result.jobFitPercentage,
+    result,
+  }
 }
 
 /** 基于合法结果修改某个维度分数与总分 */
