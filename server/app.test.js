@@ -579,3 +579,188 @@ describe('POST /api/experiences', () => {
     expect(res.body).toEqual({ error: 'Failed to save experience' })
   })
 })
+
+describe('GET /api/experiences', () => {
+  const LIST_ROW = {
+    id: 'a1b2c3d4-0000-4000-8000-000000000001',
+    job_title: '运营实习生',
+    finished_at: new Date('2026-08-24T08:10:16.571Z'),
+    completed_at: new Date('2026-08-24T08:10:16.603Z'),
+    overall_score: 82,
+    job_fit_percentage: 71,
+    // 模拟误带整包字段：列表响应绝不能返回
+    scenario: { jobId: 'operations-intern' },
+    messages: [{ role: 'user', content: 'secret-content' }],
+    result: { overallScore: 82 },
+  }
+
+  function makeListPool(rows = [LIST_ROW]) {
+    return { query: vi.fn(async () => ({ rows })) }
+  }
+
+  it('无筛选：JOIN 两张表按 finished_at 倒序，仅返回轻量字段（不带 messages/result 整包）', async () => {
+    const pool = makeListPool()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get('/api/experiences')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({
+      items: [{
+        id: LIST_ROW.id,
+        jobTitle: '运营实习生',
+        completedAt: LIST_ROW.completed_at.toISOString(),
+        overallScore: 82,
+        jobFitPercentage: 71,
+      }],
+    })
+    const bodyText = JSON.stringify(res.body)
+    expect(bodyText).not.toContain('secret-content')
+    expect(bodyText).not.toContain('scenario')
+    expect(bodyText).not.toContain('result')
+
+    expect(pool.query).toHaveBeenCalledTimes(1)
+    const [sql, params] = pool.query.mock.calls[0]
+    expect(sql).toContain('JOIN assessments')
+    expect(sql).toContain('ORDER BY e.finished_at DESC')
+    expect(params).toEqual([null, null, null])
+  })
+
+  it('有筛选：jobTitle 模糊匹配 + from/to 时间范围（date-only 当天起止）', async () => {
+    const pool = makeListPool()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app)
+      .get('/api/experiences')
+      .query({ jobTitle: '运营', from: '2026-08-01', to: '2026-08-31' })
+
+    expect(res.status).toBe(200)
+    const [sql, params] = pool.query.mock.calls[0]
+    expect(sql).toContain('ILIKE')
+    expect(sql).toContain('e.finished_at >=')
+    expect(sql).toContain('e.finished_at <=')
+    expect(params).toEqual([
+      '运营',
+      new Date('2026-08-01T00:00:00.000Z'),
+      new Date('2026-08-31T23:59:59.999Z'),
+    ])
+  })
+
+  it('筛选从 to 也可传完整 ISO 时间，其余筛选位补 null', async () => {
+    const pool = makeListPool()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app)
+      .get('/api/experiences')
+      .query({ jobTitle: '销售', from: '2026-08-24T10:00:00Z' })
+
+    expect(res.status).toBe(200)
+    const [, params] = pool.query.mock.calls[0]
+    expect(params).toEqual([
+      '销售',
+      new Date('2026-08-24T10:00:00Z'),
+      null,
+    ])
+  })
+
+  it('非法日期：返回 400 且不触库', async () => {
+    const pool = makeListPool()
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get('/api/experiences').query({ from: 'not-a-date' })
+
+    expect(res.status).toBe(400)
+    expect(pool.query).not.toHaveBeenCalled()
+  })
+
+  it('查询失败（数据库不可达）：返回 500，进程不退出', async () => {
+    const pool = { query: vi.fn(async () => { throw new Error('connection refused') }) }
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get('/api/experiences')
+
+    expect(res.status).toBe(500)
+    expect(res.body).toEqual({ error: 'Failed to list experiences' })
+  })
+
+  it('未配置 pool：返回 503（与 POST 一致）', async () => {
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn() })
+
+    const res = await request(app).get('/api/experiences')
+
+    expect(res.status).toBe(503)
+    expect(res.body).toEqual({ error: 'Database not configured' })
+  })
+})
+
+describe('GET /api/experiences/:id', () => {
+  const ID = 'a1b2c3d4-0000-4000-8000-000000000001'
+  const DETAIL_ROW = {
+    id: ID,
+    job_title: '运营实习生',
+    finished_at: new Date('2026-08-24T08:10:16.571Z'),
+    completed_at: new Date('2026-08-24T08:10:16.603Z'),
+    overall_score: 82,
+    job_fit_percentage: 71,
+    scenario: { jobId: 'operations-intern', phases: [] },
+    messages: [{ role: 'user', content: '主管好' }],
+    colleague_messages: [{ id: 'c1', role: 'assistant', content: '建议先看工单' }],
+    result: { overallScore: 82, jobFitPercentage: 71 },
+  }
+
+  function makeDetailPool(rows) {
+    return { query: vi.fn(async () => ({ rows })) }
+  }
+
+  it('返回对话 + 报告完整详情', async () => {
+    const pool = makeDetailPool([DETAIL_ROW])
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get(`/api/experiences/${ID}`)
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({
+      id: ID,
+      jobTitle: '运营实习生',
+      finishedAt: DETAIL_ROW.finished_at.toISOString(),
+      completedAt: DETAIL_ROW.completed_at.toISOString(),
+      overallScore: 82,
+      jobFitPercentage: 71,
+      scenario: DETAIL_ROW.scenario,
+      messages: DETAIL_ROW.messages,
+      colleagueMessages: DETAIL_ROW.colleague_messages,
+      result: DETAIL_ROW.result,
+    })
+    // 按 id 查询
+    expect(pool.query.mock.calls[0][1]).toEqual([ID])
+  })
+
+  it('记录不存在：返回 404', async () => {
+    const pool = makeDetailPool([])
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get(`/api/experiences/${ID}`)
+
+    expect(res.status).toBe(404)
+    expect(res.body).toEqual({ error: 'Experience not found' })
+  })
+
+  it('非法 id 格式：返回 400 且不触库', async () => {
+    const pool = makeDetailPool([])
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn(), pool })
+
+    const res = await request(app).get('/api/experiences/not-a-uuid')
+
+    expect(res.status).toBe(400)
+    expect(pool.query).not.toHaveBeenCalled()
+  })
+
+  it('未配置 pool：返回 503（与 POST 一致）', async () => {
+    const app = createApp({ apiKey: 'test-api-key', fetchImpl: vi.fn() })
+
+    const res = await request(app).get(`/api/experiences/${ID}`)
+
+    expect(res.status).toBe(503)
+    expect(res.body).toEqual({ error: 'Database not configured' })
+  })
+})
