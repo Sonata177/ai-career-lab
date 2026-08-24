@@ -17,8 +17,9 @@ if (DATABASE_URL) {
   try {
     pool = new Pool({
       connectionString: DATABASE_URL,
-      // 数据库不可达时快速失败，避免请求（如 health 探测）悬挂
-      connectionTimeoutMillis: 3000,
+      // 数据库不可达时失败，避免请求（如 health 探测）无限悬挂。
+      // 注意：实测该链路（CGNAT/Tailscale）建连耗时 1~15s 波动，3s 会频繁误报不可用
+      connectionTimeoutMillis: 15_000,
     })
     // 空闲连接异常（如数据库重启、连接被服务端断开）不应导致进程退出
     pool.on('error', (err) => {
